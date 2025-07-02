@@ -21,3 +21,6 @@ This is a Raspberry Pi 5 project for detecting damaged chair parts using a camer
 ```bash
 sudo apt update
 sudo apt install python3-picamera2 python3-pil -y
+
+
+Link : https://owensun2004.github.io/Furniture-Assembly-Web/
