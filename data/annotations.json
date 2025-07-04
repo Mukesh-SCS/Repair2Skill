@@ -1,6 +1,0 @@
-[
-  {"name": "left leg", "label": [0], "role": "broken"},
-  {"name": "right leg", "label": [1], "role": "intact"},
-  {"name": "seat panel", "label": [2], "role": "cracked"},
-  {"name": "backrest", "label": [3], "role": "detached"}
-]

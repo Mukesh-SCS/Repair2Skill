@@ -1,0 +1,15 @@
+torch
+torchvision
+openai
+opencv-python
+python-dotenv
+networkx
+numpy
+matplotlib
+pandas
+requests
+Pillow
+trimesh
+pyvista
+scipy
+picamera2

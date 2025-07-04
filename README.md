@@ -8,73 +8,62 @@ This is a Raspberry Pi 5 project for detecting damaged chair parts using a camer
 
 
 ---
-## 📦 Project Structure
+## 📦 Project Directory Structure
 
-Repair2Skill/
+FurnitureRepairModel/
+│
 ├── data/
-│ ├── images/ # Captured or test images of broken furniture
-│ ├── annotations.json # Part-level condition (e.g., broken, intact)
-│ └── repair_manuals/ # Text-based repair instructions
-├── openai_prompts/
-│ └── prompt_repair_graph.txt
-├── repair_graph_gen/
-│ └── repair_run.py # CLI tool to generate repair plans
-├── web/ # Repair2Skill web interface (React + Tailwind)
-│ └── components/
-│ └── Repair2SkillApp.tsx
-├── README.md
+│   ├── partnet_data/           # Downloaded from PartNet Dataset
+│   ├── ikea_manuals/           # From IKEA manual dataset
+│   └── synthetic_damage/       # Synthetic damaged scenarios
+│
+├── models/
+│   ├── damage_detection/       # CNN-based part detector
+│   ├── pose_estimation/        # Pose Estimator (from Manual2Skill)
+│   └── openai_integration/     # API integration with GPT-4
+│
+├── scripts/
+│   ├── generate_synthetic_data.py
+│   ├── train_part_detector.py
+│   ├── detect_damage.py
+│   ├── generate_repair_plan.py
+│   └── render_visual_guidance.py
+│
+├── utils/
+│   ├── assembly_plan_utils.py
+│   ├── visualization_utils.py
+│   └── openai_utils.py
+│
+├── requirements.txt
+└── main.py                      # Entry point for the pipeline
+
+
 
 
 
 ## 🛠️ Setup
 1. **Install system packages:**
 ```bash
-sudo apt update
-sudo apt install python3-picamera2 python3-pil -y
-
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
 Link : https://owensun2004.github.io/Furniture-Assembly-Web/
 
+```
 
 
-
-
-
-
-
-
-## 🔍 What It Does
-
-1. 📸 Takes an image of a broken furniture item (e.g., chair)
-2. 🤖 Uses GPT-4o to analyze broken parts (from annotations or detection)
-3. 🧠 Generates a hierarchical **repair plan**
-4. 🌐 Optionally visualizes the repair plan in a clean web UI
-
----
-
-
-### ✅ Prerequisites
-
-- Python 3.9+
-- Node.js + npm
-- OpenAI API key (GPT-4o)
-
----
-
-### 🧪 CLI: Generate Repair Plan
-
-```bash
-cd repair_graph_gen
-python3 repair_run.py
-⚙️ This will load part annotations, query GPT-4o using your custom prompt, and print the repair steps.
-
-💻 Web UI
-The UI allows image upload and repair plan generation.
-
-### Install & Run
-
-cd web
-npm install
-npm run dev 
-
-Then open http://localhost:3000 in your browser.
+``` Sources:
+Tie et al. “Manual2Skill: Learning to Read Manuals and Acquire Robotic Skills for Furniture Assembly…” RSS 2025 – (for base framework and ideas on using VLMs for assembly)
+arxiv.org
+github.com
+IKEA-Manual Dataset (Wang et al., NeurIPS 2022) – (for paired 3D furniture models and assembly manuals with annotations)
+cs.stanford.edu
+cs.stanford.edu
+PartNet Dataset (Mo et al., CVPR 2019) – (for fine-grained part-level 3D models, used in training pose estimation and segmentation)
+github.com
+github.com
+Manual2Skill GitHub Repository – (implementation details for assembly graph generation and pose estimation pipelines)
+github.com
+github.com
+Piyush Goenka, “Product Disassembly Sequence Planning” – (discussion of AI-driven disassembly, relevant to planning removal steps in repairs) 
