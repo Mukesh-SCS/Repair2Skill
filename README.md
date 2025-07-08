@@ -16,7 +16,7 @@ This implementation runs on a **Raspberry Pi 5** equipped with a camera for real
 ---
 
 ## 📁 Project Structure
-```
+```bash
 FurnitureRepairModel/
 │
 ├── data/
