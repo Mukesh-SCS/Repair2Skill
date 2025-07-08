@@ -1,10 +1,13 @@
 import torch
 import torchvision.transforms as T
 from PIL import Image
-from utils.openai_utils import analyze_image
+from utils.openai_utils import analyze_image # Assuming analyze_image is a function that returns a damage report
 
 
-#need to add the pi camera image as well as user image from train folder
+def detect_damage_from_image(image_path):
+    report = analyze_image(image_path)
+    return report
+
 def detect_parts(image_path, model_path):
     model = torchvision.models.detection.fasterrcnn_resnet50_fpn()
     model.load_state_dict(torch.load(model_path))
@@ -24,3 +27,6 @@ def detect_parts(image_path, model_path):
 if __name__ == "__main__":
     detect_parts("../data/synthetic_damage/chair_missing_leg.png",
                  "../models/damage_detection/part_detector.pth")
+
+
+

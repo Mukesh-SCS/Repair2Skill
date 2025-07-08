@@ -1,33 +1,43 @@
-# Repair2Skill on Raspberry Pi 5
+# 🛠️ Repair2Skill on Raspberry Pi 5
 
-**Repair2Skill** is an AI-powered framework that enables robots (or intelligent agents) to perform real-world furniture repair tasks. Inspired by [Manual2Skill (RSS 2025)](https://github.com/owensun2004/Manual2Skill), this project adapts the approach to repair broken furniture using a combination of images, manual texts, and vision-language models (VLMs) like GPT-4o.
+**Repair2Skill** is an AI-powered framework that enables robots (or intelligent agents) to detect and plan repairs for broken furniture parts. Inspired by [Manual2Skill (RSS 2025)](https://github.com/owensun2004/Manual2Skill), this project extends the original idea to handle **furniture repair** rather than just assembly—by using a camera, part detection, and **vision-language models (VLMs)** like GPT-4o.
 
-
-## 🧠 Overview
-This is a Raspberry Pi 5 project for detecting damaged chair parts using a camera and generating a visual repair plan using GPT-4o.
-
+This implementation runs on a **Raspberry Pi 5** equipped with a camera for real-time image capture.
 
 ---
-## 📦 Project Directory Structure
 
+## 🧠 What It Does
+
+- Captures an image of a **broken chair** using a Pi Camera or uploaded image.
+- Uses a trained **CNN (Faster R-CNN)** model to detect missing or broken parts.
+- Sends the detection result to **GPT-4o** via OpenAI API to generate a **step-by-step repair plan**.
+- Generates a **visual repair graph** to aid in execution or robot planning.
+
+---
+
+## 📁 Project Structure
+```
 FurnitureRepairModel/
 │
 ├── data/
-│   ├── partnet_data/           # Downloaded from PartNet Dataset
-│   ├── ikea_manuals/           # From IKEA manual dataset
-│   └── synthetic_damage/       # Synthetic damaged scenarios
+│   ├── partnet_data/
+│   ├── ikea_manuals/
+│   ├── synthetic_damage/
+│   └── user_images/
 │
 ├── models/
-│   ├── damage_detection/       # CNN-based part detector
-│   ├── pose_estimation/        # Pose Estimator (from Manual2Skill)
-│   └── openai_integration/     # API integration with GPT-4
+│   ├── damage_detection/
+│   │   └── model.pth
+│   ├── pose_estimation/
+│   └── openai_integration/
 │
 ├── scripts/
 │   ├── generate_synthetic_data.py
 │   ├── train_part_detector.py
 │   ├── detect_damage.py
 │   ├── generate_repair_plan.py
-│   └── render_visual_guidance.py
+│   ├── render_visual_guidance.py
+│   └── capture_image.py
 │
 ├── utils/
 │   ├── assembly_plan_utils.py
@@ -35,35 +45,55 @@ FurnitureRepairModel/
 │   └── openai_utils.py
 │
 ├── requirements.txt
-└── main.py                      # Entry point for the pipeline
+├── .env
+├── .gitignore
+├── main.py
+└── README.md
+```
 
 
+---
 
+## ⚙️ How It Works
 
+You can run the pipeline either with a captured image from the Raspberry Pi camera or an uploaded image.
 
-## 🛠️ Setup
-1. **Install system packages:**
+### 🔴 Option 1: Use Pi Camera
 ```bash
+python main.py --camera
+
+``` 
+
+## 🔵 Option 2: Upload an Image
+```bash
+python main.py --upload ./data/user_images/my_broken_chair.jpg
+```
+### The pipeline will:
+  Detect broken parts
+  Generate repair steps
+  Output a repair graph (saved in outputs/)
+
+## 🛠️ Setup Instructions
+1. Clone and set up the environment
+```bash
+git clone 
+cd 
+
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-Link : https://owensun2004.github.io/Furniture-Assembly-Web/
+``` 
+2. Add your OpenAI API Key
+Create a .env file in the root folder:
+OPENAI_API_KEY=your-api-key-here
 
-```
 
 
-``` Sources:
-Tie et al. “Manual2Skill: Learning to Read Manuals and Acquire Robotic Skills for Furniture Assembly…” RSS 2025 – (for base framework and ideas on using VLMs for assembly)
-arxiv.org
-github.com
-IKEA-Manual Dataset (Wang et al., NeurIPS 2022) – (for paired 3D furniture models and assembly manuals with annotations)
-cs.stanford.edu
-cs.stanford.edu
-PartNet Dataset (Mo et al., CVPR 2019) – (for fine-grained part-level 3D models, used in training pose estimation and segmentation)
-github.com
-github.com
-Manual2Skill GitHub Repository – (implementation details for assembly graph generation and pose estimation pipelines)
-github.com
-github.com
-Piyush Goenka, “Product Disassembly Sequence Planning” – (discussion of AI-driven disassembly, relevant to planning removal steps in repairs) 
+## 📚 References
+- Manual2Skill (RSS 2025) Paper | GitHub https://github.com/owensun2004/Manual2Skill
+- PartNet Dataset (CVPR 2019) GitHub https://github.com/daerduoCarey/partnet_dataset
+- IKEA-Manual Dataset (NeurIPS 2022) Stanford Page https://cs.stanford.edu/~kaichun/ikea.html
+- Product Disassembly Planning
+  Goenka, P. et al. – for strategies relevant to disassembly & repair.
+- Furniture-Assembly-Web Demo  | https://owensun2004.github.io/Furniture-Assembly-Web/
