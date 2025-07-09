@@ -1,0 +1,14 @@
+
+model:
+  type: fasterrcnn_resnet50_fpn
+  pretrained: true
+  num_classes: 14  # background + 13 labels
+
+train:
+  batch_size: 2
+  epochs: 10
+  learning_rate: 0.005
+  momentum: 0.9
+  weight_decay: 0.0005
+  step_size: 5
+  gamma: 0.1

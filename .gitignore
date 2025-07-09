@@ -1,6 +1,8 @@
+# Python virtual environment
+# Ignore Python virtual environment directories
 venv/
 __pycache__/
 *.pyc
 .env
-outputs/
-chair.jpg
+#data/user_images/*
+#outputs/*
