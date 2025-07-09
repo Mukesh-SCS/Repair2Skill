@@ -10,3 +10,4 @@ Pillow
 trimesh
 pyvista
 scipy
+dotenv

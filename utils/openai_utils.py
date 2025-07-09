@@ -5,7 +5,7 @@ import json
 from dotenv import load_dotenv
 
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
@@ -27,18 +27,22 @@ def analyze_image(image_path):
         "Only output the JSON array."
     )
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "Furniture repair analysis."},
-            {"role": "user", "content": prompt},
-            {"role": "user", "content": {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}
+                ]
+            },
         ],
         max_tokens=1000,
     )
 
     content = response.choices[0].message.content
-    # Remove code block markers if present
     content = content.replace("```json", "").replace("```", "").strip()
     try:
         return json.loads(content)
@@ -52,7 +56,7 @@ def generate_repair_plan(furniture_type, damaged_part, assembly_step):
         f"Assembly step: {assembly_step}\n"
         "Generate a step-by-step repair plan for the above scenario."
     )
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": "You are an expert in furniture repair."},
