@@ -127,7 +127,7 @@ File:
 
 ## ✅ Done!
 
-You're ready to detect broken chair parts and build repair plans. Want to move to hierarchical graphs or motion generation next? Let me know.
+You're ready to detect broken chair parts and build repair plans.
 
 
 
@@ -263,4 +263,3 @@ python main.py --upload ./data/user_images/my_broken_chair.jpg
 
 ---
 
-You’re ready to test and expand your Repair2Skill project on the Pi!
