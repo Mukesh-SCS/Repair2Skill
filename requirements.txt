@@ -12,7 +12,7 @@ json5>=0.9.0
 tqdm>=4.62.0
 albumentations>=1.0.0
 pycocotools>=2.0.0
-detectron2>=0.6.0
+# detectron2>=0.6.0
 transformers>=4.20.0
 # For Raspberry Pi camera
 picamera2>=0.3.0
