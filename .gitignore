@@ -5,4 +5,4 @@ __pycache__/
 *.pyc
 .env
 #data/user_images/*
-outputs/*
+#outputs/*

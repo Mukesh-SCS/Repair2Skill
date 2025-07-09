@@ -1,62 +1,68 @@
-import openai
-import base64
-import os
+# ==================== utils/assembly_plan_utils.py ====================
 import json
-from dotenv import load_dotenv
+import cv2
+import numpy as np
+from PIL import Image
 
-load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("utf-8")
-
-def parse_manual(manual_path, stage1_json_path="./outputs/stage1_parts.json"):
-    """
-    Use a VLM (GPT-4o) to generate a hierarchical assembly graph from the manual image and Stage I JSON.
-    """
-    # Load Stage I JSON
-    with open(stage1_json_path, "r") as f:
-        stage1_json = json.load(f)
-
-    # Encode manual image
-    encoded_manual = encode_image(manual_path)
-
-    prompt = (
-        "You are an expert in furniture assembly. "
-        "Given the following assembly manual page (image) and a JSON list of detected parts, "
-        "generate a hierarchical assembly graph in JSON format. "
-        "Each step should list the involved part labels as an array. "
-        "Example output:\n"
-        "{\n"
-        "  \"steps\": [\n"
-        "    {\"step\": 1, \"parts\": [0, 5]},\n"
-        "    {\"step\": 2, \"parts\": [3, 4, 0, 5]}\n"
-        "  ]\n"
-        "}\n"
-        "Only output the JSON."
-    )
-
-    response = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "Furniture assembly graph generation."},
-            {"role": "user", "content": prompt},
-            {"role": "user", "content": f"Detected parts JSON:\n{json.dumps(stage1_json, indent=2)}"},
-            {"role": "user", "content": {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/png;base64,{encoded_manual}",
-                    "detail": "high"
-                }
-            }},
-        ],
-        max_tokens=1000,
-    )
-
-    content = response.choices[0].message.content
-    content = content.replace("```json", "").replace("```", "").strip()
-    try:
-        return json.loads(content)
-    except Exception:
-        return content  # fallback: return raw string if not valid JSON
+def parse_manual(manual_path, parts_json_path):
+    """Parse furniture manual and generate assembly graph"""
+    
+    # Load detected parts
+    with open(parts_json_path, 'r') as f:
+        parts_data = json.load(f)
+    
+    # Create assembly graph structure
+    assembly_graph = {
+        "nodes": [],
+        "edges": [],
+        "repair_sequence": []
+    }
+    
+    # Process detected damages
+    if "detected_damages" in parts_data:
+        for i, damage in enumerate(parts_data["detected_damages"]):
+            node = {
+                "id": i,
+                "type": "repair_action",
+                "action": f"repair_{damage['type']}",
+                "confidence": damage["confidence"]
+            }
+            assembly_graph["nodes"].append(node)
+    
+    # Process detected parts
+    if "detected_parts" in parts_data:
+        for i, part in enumerate(parts_data["detected_parts"]):
+            node = {
+                "id": len(assembly_graph["nodes"]) + i,
+                "type": "part",
+                "part_name": part["part"],
+                "confidence": part["confidence"]
+            }
+            assembly_graph["nodes"].append(node)
+    
+    # Generate repair sequence
+    repair_sequence = []
+    node_id = 0
+    
+    # Priority order for chair repair
+    priority_parts = [
+        "seat", "back", "front_left_leg", "front_right_leg",
+        "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"
+    ]
+    
+    for part in priority_parts:
+        # Check if this part needs repair
+        for damage in parts_data.get("detected_damages", []):
+            repair_step = {
+                "step_id": node_id,
+                "action": f"repair_{damage['type']}",
+                "target_part": part,
+                "estimated_time": "15 minutes",
+                "difficulty": "medium"
+            }
+            repair_sequence.append(repair_step)
+            node_id += 1
+    
+    assembly_graph["repair_sequence"] = repair_sequence
+    
+    return assembly_graph

@@ -1,67 +1,76 @@
+# ==================== utils/openai_utils.py ====================
 import openai
-import base64
 import os
-import json
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("utf-8")
-
-def analyze_image(image_path):
-    encoded_image = encode_image(image_path)
-
-    prompt = (
-        "You are an expert in furniture part analysis. "
-        "Given the following image of a piece of furniture, "
-        "list all visible parts as a JSON array. "
-        "For each part, include: name, label (as an integer), and role (as a string). "
-        "Example format:\n"
-        "[\n"
-        "  {\"name\": \"side frame\", \"label\": 0, \"role\": \"support\"},\n"
-        "  {\"name\": \"seat frame\", \"label\": 1, \"role\": \"seat\"}\n"
-        "]\n"
-        "Only output the JSON array."
-    )
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "Furniture repair analysis."},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}}
-                ]
-            },
-        ],
-        max_tokens=1000,
-    )
-
-    content = response.choices[0].message.content
-    content = content.replace("```json", "").replace("```", "").strip()
+def generate_repair_plan(furniture_type, damaged_part, assembly_step, damage_type="missing"):
+    """Generate repair plan using OpenAI GPT-4"""
+    
+    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    prompt = f"""
+    You are an expert furniture repair technician. Given the following information about a damaged {furniture_type}:
+    
+    - Furniture Type: {furniture_type}
+    - Damaged Part: {damaged_part}
+    - Damage Type: {damage_type}
+    - Original Assembly Step: {assembly_step}
+    
+    Please provide a detailed step-by-step repair plan. Include:
+    1. Required tools and materials
+    2. Safety precautions
+    3. Step-by-step instructions
+    4. Tips for best results
+    
+    Format your response as a structured JSON with the following format:
+    {{
+        "repair_plan": {{
+            "tools_needed": ["tool1", "tool2", ...],
+            "materials_needed": ["material1", "material2", ...],
+            "safety_precautions": ["precaution1", "precaution2", ...],
+            "steps": [
+                {{
+                    "step_number": 1,
+                    "description": "Step description",
+                    "estimated_time": "time estimate"
+                }},
+                ...
+            ],
+            "tips": ["tip1", "tip2", ...],
+            "difficulty_level": "easy|medium|hard"
+        }}
+    }}
+    """
+    
     try:
-        return json.loads(content)
-    except Exception:
-        return content  # fallback: return raw string if not valid JSON
-
-def generate_repair_plan(furniture_type, damaged_part, assembly_step):
-    prompt = (
-        f"Furniture type: {furniture_type}\n"
-        f"Damaged part: {damaged_part}\n"
-        f"Assembly step: {assembly_step}\n"
-        "Generate a step-by-step repair plan for the above scenario."
-    )
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "You are an expert in furniture repair."},
-            {"role": "user", "content": prompt},
-        ],
-        max_tokens=500,
-    )
-    return response.choices[0].message.content
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful furniture repair expert."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=1500
+        )
+        
+        # Parse the response
+        repair_plan = json.loads(response.choices[0].message.content)
+        return repair_plan
+        
+    except Exception as e:
+        print(f"Error generating repair plan: {e}")
+        return {
+            "error": "Failed to generate repair plan",
+            "fallback_plan": {
+                "tools_needed": ["screwdriver", "glue", "sandpaper"],
+                "materials_needed": ["replacement part", "screws"],
+                "steps": [
+                    {"step_number": 1, "description": f"Remove damaged {damaged_part}", "estimated_time": "10 minutes"},
+                    {"step_number": 2, "description": f"Clean the area", "estimated_time": "5 minutes"},
+                    {"step_number": 3, "description": f"Install new {damaged_part}", "estimated_time": "15 minutes"}
+                ]
+            }
+        }

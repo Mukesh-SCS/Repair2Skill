@@ -1,21 +1,68 @@
-import trimesh
+# ==================== scripts/render_visual_guidance.py ====================
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image, ImageDraw
+import os
 
-def render_step_visual(mesh_path, highlighted_part_idx, save_path):
-    mesh = trimesh.load(mesh_path)
-    # Assume mesh is split into parts (e.g., via mesh.split())
-    parts = mesh.split()
-    colors = ['white'] * len(parts)
-    if 0 <= highlighted_part_idx < len(parts):
-        colors[highlighted_part_idx] = 'red'
-    scene = trimesh.Scene()
-    for part, color in zip(parts, colors):
-        scene.add_geometry(part, node_name=color)
-    # Render and save
-    png = scene.save_image(resolution=(800, 600))
-    with open(save_path, 'wb') as f:
-        f.write(png)
-
-if __name__ == "__main__":
-    render_step_visual("../data/partnet_data/chair/model.obj",
-                       highlighted_part_idx=2,
-                       save_path="../data/visual_guides/repair_step1.png")
+def render_step_visual(model_path, highlighted_part_idx, save_path):
+    """Render visual guidance for repair step"""
+    
+    # Create a simple visualization
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+    
+    # Draw a simple chair diagram
+    chair_parts = {
+        "seat": {"coords": [3, 3, 7, 4], "color": "lightblue"},
+        "back": {"coords": [4, 1, 6, 3], "color": "lightgreen"},
+        "front_left_leg": {"coords": [3, 4, 3.5, 7], "color": "orange"},
+        "front_right_leg": {"coords": [6.5, 4, 7, 7], "color": "orange"},
+        "back_left_leg": {"coords": [4, 4, 4.5, 7], "color": "orange"},
+        "back_right_leg": {"coords": [5.5, 4, 6, 7], "color": "orange"},
+        "armrest_left": {"coords": [2.5, 2, 4, 2.5], "color": "yellow"},
+        "armrest_right": {"coords": [6, 2, 7.5, 2.5], "color": "yellow"}
+    }
+    
+    # Draw each part
+    for i, (part_name, part_info) in enumerate(chair_parts.items()):
+        x1, y1, x2, y2 = part_info["coords"]
+        color = "red" if i == highlighted_part_idx else part_info["color"]
+        width = 3 if i == highlighted_part_idx else 1
+        
+        rect = plt.Rectangle((x1, y1), x2-x1, y2-y1, 
+                           facecolor=color, edgecolor='black', linewidth=width)
+        ax.add_patch(rect)
+        
+        # Add part label
+        ax.text((x1+x2)/2, (y1+y2)/2, part_name.replace('_', ' '), 
+               ha='center', va='center', fontsize=8, weight='bold')
+    
+    # Highlight the part that needs repair
+    if highlighted_part_idx < len(chair_parts):
+        part_name = list(chair_parts.keys())[highlighted_part_idx]
+        ax.set_title(f"Repair Focus: {part_name.replace('_', ' ').title()}", 
+                    fontsize=14, weight='bold')
+        
+        # Add arrow pointing to highlighted part
+        part_coords = list(chair_parts.values())[highlighted_part_idx]["coords"]
+        center_x = (part_coords[0] + part_coords[2]) / 2
+        center_y = (part_coords[1] + part_coords[3]) / 2
+        
+        ax.annotate('REPAIR THIS PART', 
+                   xy=(center_x, center_y), 
+                   xytext=(center_x + 2, center_y - 2),
+                   arrowprops=dict(arrowstyle='->', color='red', lw=2),
+                   fontsize=12, color='red', weight='bold')
+    
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 8)
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlabel('Chair Width')
+    ax.set_ylabel('Chair Height')
+    
+    # Save the visualization
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Visual guidance saved to: {save_path}")
