@@ -54,7 +54,7 @@ class FurnitureDataset(Dataset):
             damage_labels[damage_idx] = 1
             part_labels[part_idx] = 1
         
-        return image, damage_labels, part_labels, annotation
+        return image, damage_labels, part_labels
 
 class FurnitureRepairModel(nn.Module):
     def __init__(self, num_damage_classes=5, num_part_classes=8):
@@ -138,7 +138,7 @@ def train_model():
         model.train()
         train_loss = 0.0
         
-        for images, damage_labels, part_labels, _ in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        for images, damage_labels, part_labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
             images = images.to(device)
             damage_labels = damage_labels.to(device)
             part_labels = part_labels.to(device)
@@ -161,16 +161,16 @@ def train_model():
         val_loss = 0.0
         
         with torch.no_grad():
-            for images, damage_labels, part_labels, _ in val_loader:
+            for images, damage_labels, part_labels in val_loader:
                 images = images.to(device)
                 damage_labels = damage_labels.to(device)
                 part_labels = part_labels.to(device)
-                
+
                 damage_outputs, part_outputs = model(images)
-                
+
                 damage_loss = criterion(damage_outputs, damage_labels)
                 part_loss = criterion(part_outputs, part_labels)
-                
+
                 total_loss = damage_loss + part_loss
                 val_loss += total_loss.item()
         
@@ -200,3 +200,6 @@ def train_model():
     plt.grid(True)
     plt.savefig("./outputs/training_curves.png")
     plt.show()
+
+if __name__ == "__main__":
+    train_model()

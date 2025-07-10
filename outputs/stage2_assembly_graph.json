@@ -1,0 +1,365 @@
+{
+  "nodes": [
+    {
+      "id": 0,
+      "type": "repair_action",
+      "action": "repair_missing",
+      "confidence": 0.5488602519035339
+    },
+    {
+      "id": 1,
+      "type": "repair_action",
+      "action": "repair_cracked",
+      "confidence": 0.7310255169868469
+    },
+    {
+      "id": 2,
+      "type": "repair_action",
+      "action": "repair_broken",
+      "confidence": 0.5588036775588989
+    },
+    {
+      "id": 3,
+      "type": "repair_action",
+      "action": "repair_loose",
+      "confidence": 0.5562772154808044
+    },
+    {
+      "id": 4,
+      "type": "repair_action",
+      "action": "repair_scratched",
+      "confidence": 0.5490634441375732
+    },
+    {
+      "id": 5,
+      "type": "part",
+      "part_name": "seat",
+      "confidence": 0.5620183944702148
+    },
+    {
+      "id": 7,
+      "type": "part",
+      "part_name": "back",
+      "confidence": 0.5903110504150391
+    },
+    {
+      "id": 9,
+      "type": "part",
+      "part_name": "front_left_leg",
+      "confidence": 0.5423831343650818
+    },
+    {
+      "id": 11,
+      "type": "part",
+      "part_name": "front_right_leg",
+      "confidence": 0.5436573028564453
+    },
+    {
+      "id": 13,
+      "type": "part",
+      "part_name": "back_left_leg",
+      "confidence": 0.6093038320541382
+    },
+    {
+      "id": 15,
+      "type": "part",
+      "part_name": "back_right_leg",
+      "confidence": 0.6002207398414612
+    },
+    {
+      "id": 17,
+      "type": "part",
+      "part_name": "armrest_left",
+      "confidence": 0.621960461139679
+    },
+    {
+      "id": 19,
+      "type": "part",
+      "part_name": "armrest_right",
+      "confidence": 0.570080041885376
+    }
+  ],
+  "edges": [],
+  "repair_sequence": [
+    {
+      "step_id": 0,
+      "action": "repair_missing",
+      "target_part": "seat",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 1,
+      "action": "repair_cracked",
+      "target_part": "seat",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 2,
+      "action": "repair_broken",
+      "target_part": "seat",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 3,
+      "action": "repair_loose",
+      "target_part": "seat",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 4,
+      "action": "repair_scratched",
+      "target_part": "seat",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 5,
+      "action": "repair_missing",
+      "target_part": "back",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 6,
+      "action": "repair_cracked",
+      "target_part": "back",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 7,
+      "action": "repair_broken",
+      "target_part": "back",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 8,
+      "action": "repair_loose",
+      "target_part": "back",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 9,
+      "action": "repair_scratched",
+      "target_part": "back",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 10,
+      "action": "repair_missing",
+      "target_part": "front_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 11,
+      "action": "repair_cracked",
+      "target_part": "front_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 12,
+      "action": "repair_broken",
+      "target_part": "front_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 13,
+      "action": "repair_loose",
+      "target_part": "front_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 14,
+      "action": "repair_scratched",
+      "target_part": "front_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 15,
+      "action": "repair_missing",
+      "target_part": "front_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 16,
+      "action": "repair_cracked",
+      "target_part": "front_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 17,
+      "action": "repair_broken",
+      "target_part": "front_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 18,
+      "action": "repair_loose",
+      "target_part": "front_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 19,
+      "action": "repair_scratched",
+      "target_part": "front_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 20,
+      "action": "repair_missing",
+      "target_part": "back_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 21,
+      "action": "repair_cracked",
+      "target_part": "back_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 22,
+      "action": "repair_broken",
+      "target_part": "back_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 23,
+      "action": "repair_loose",
+      "target_part": "back_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 24,
+      "action": "repair_scratched",
+      "target_part": "back_left_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 25,
+      "action": "repair_missing",
+      "target_part": "back_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 26,
+      "action": "repair_cracked",
+      "target_part": "back_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 27,
+      "action": "repair_broken",
+      "target_part": "back_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 28,
+      "action": "repair_loose",
+      "target_part": "back_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 29,
+      "action": "repair_scratched",
+      "target_part": "back_right_leg",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 30,
+      "action": "repair_missing",
+      "target_part": "armrest_left",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 31,
+      "action": "repair_cracked",
+      "target_part": "armrest_left",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 32,
+      "action": "repair_broken",
+      "target_part": "armrest_left",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 33,
+      "action": "repair_loose",
+      "target_part": "armrest_left",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 34,
+      "action": "repair_scratched",
+      "target_part": "armrest_left",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 35,
+      "action": "repair_missing",
+      "target_part": "armrest_right",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 36,
+      "action": "repair_cracked",
+      "target_part": "armrest_right",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 37,
+      "action": "repair_broken",
+      "target_part": "armrest_right",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 38,
+      "action": "repair_loose",
+      "target_part": "armrest_right",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    },
+    {
+      "step_id": 39,
+      "action": "repair_scratched",
+      "target_part": "armrest_right",
+      "estimated_time": "15 minutes",
+      "difficulty": "medium"
+    }
+  ]
+}

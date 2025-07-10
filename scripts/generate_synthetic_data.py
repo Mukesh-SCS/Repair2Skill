@@ -145,3 +145,14 @@ class SyntheticDataGenerator:
             json.dump(annotations, f, indent=2)
         
         print(f"Generated {num_samples} synthetic images with annotations")
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Generate synthetic chair damage dataset")
+    parser.add_argument("--samples", type=int, default=100, help="Number of samples to generate")
+    parser.add_argument("--output_dir", type=str, default="./data/synthetic_damage/", help="Output directory")
+    args = parser.parse_args()
+
+    generator = SyntheticDataGenerator(output_dir=args.output_dir)
+    generator.generate_dataset(num_samples=args.samples)

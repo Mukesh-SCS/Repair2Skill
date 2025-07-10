@@ -1,0 +1,72 @@
+{
+  "repair_plan": {
+    "tools_needed": [
+      "Tape measure",
+      "Saw",
+      "Screwdriver",
+      "Drill",
+      "Sandpaper",
+      "Clamps"
+    ],
+    "materials_needed": [
+      "Replacement wood",
+      "Wood screws",
+      "Wood glue",
+      "Finish (paint or varnish)"
+    ],
+    "safety_precautions": [
+      "Always wear safety glasses when cutting or drilling wood",
+      "Use clamps to secure the chair when working on it",
+      "Work in a well-ventilated area when applying finish",
+      "Wear gloves when handling sharp tools"
+    ],
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Measure the dimensions of the chair seat area.",
+        "estimated_time": "10 minutes"
+      },
+      {
+        "step_number": 2,
+        "description": "Cut a piece of replacement wood to the measured size.",
+        "estimated_time": "20 minutes"
+      },
+      {
+        "step_number": 3,
+        "description": "Smooth the edges of the cut wood with sandpaper.",
+        "estimated_time": "15 minutes"
+      },
+      {
+        "step_number": 4,
+        "description": "Position the new seat on the chair frame and secure with clamps.",
+        "estimated_time": "10 minutes"
+      },
+      {
+        "step_number": 5,
+        "description": "Drill pilot holes through the chair frame into the new seat.",
+        "estimated_time": "15 minutes"
+      },
+      {
+        "step_number": 6,
+        "description": "Use the screwdriver to secure the new seat to the chair frame with wood screws.",
+        "estimated_time": "15 minutes"
+      },
+      {
+        "step_number": 7,
+        "description": "Apply wood glue around the edges for extra strength.",
+        "estimated_time": "10 minutes"
+      },
+      {
+        "step_number": 8,
+        "description": "Once the glue is dry, apply the finish to match the rest of the chair.",
+        "estimated_time": "30 minutes plus drying time"
+      }
+    ],
+    "tips": [
+      "Ensure the replacement wood is of the same type and thickness as the original seat",
+      "Pre-drill holes to prevent splitting the wood",
+      "Allow the finish to dry completely before using the chair"
+    ],
+    "difficulty_level": "medium"
+  }
+}
