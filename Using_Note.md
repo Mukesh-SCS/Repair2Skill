@@ -263,3 +263,53 @@ python main.py --upload ./data/user_images/my_broken_chair.jpg
 
 ---
 
+
+
+### DElete after use ##
+
+Quick Start: Furniture Repair Model Pipeline
+1. Prerequisites
+Raspberry Pi 5 with 64-bit OS.
+Pi Camera connected and working.
+3D model at ./data/partnet_data/chair/model.obj.
+Texture files in ./data/textures/.
+OpenAI API key in .env as OPENAI_API_KEY=your-api-key-here.
+Virtual environment activated:
+
+source venv/bin/activate
+All code and config files are up to date.
+2. Generate Synthetic Training Data
+
+python scripts/generate_synthetic_data.py --samples 1000
+Check: ./data/synthetic_damage/images/ for images, and annotation files for content.
+3. Train the Detection Model
+
+python scripts/train_detector_frcnn.py
+Check: ./models/damage_detection/frcnn_model.pth is created.
+Tip: If you get memory errors, reduce batch size in model_config.yaml.
+4. (Optional) Optimize the Model
+
+python scripts/model_optimization.py
+Check: quantized_model.pth and pruned_model.pth in damage_detection.
+5. Test the Pipeline
+Capture an image (optional):
+
+python scripts/capture_image.py
+Run the main script with your image:
+
+python main.py --upload ./data/user_images/your_image.jpg
+Check outputs:
+./outputs/stage1_parts.json
+./outputs/repair_plan_*.json
+./outputs/stage2_assembly_graph.json
+visual_guides
+6. Evaluate the Model
+
+python scripts/evaluate_model.py --test-data-path ./data/synthetic_damage/
+Check: ./outputs/evaluation_results.png and .json for metrics.
+Troubleshooting
+No damage detected? Lower threshold in detect_damage.py.
+Visual guide incorrect? Check damage_report_path in main.py.
+Slow or errors? Reduce --samples or batch size.
+You can copy and follow these steps directly.
+Let me know if you want a printable version or further simplification!

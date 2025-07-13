@@ -2,6 +2,7 @@
 import argparse
 import os
 import json
+import yaml
 from scripts.capture_image import capture_from_camera
 from scripts.detect_damage import detect_damage_from_image, detect_parts
 from scripts.render_visual_guidance import render_step_visual
@@ -10,7 +11,15 @@ from scripts.train_part_detector import train_model
 from utils.openai_utils import generate_repair_plan
 from utils.assembly_plan_utils import parse_manual
 
+
+
+
 def main():
+    with open("configs/model_config.yaml", "r") as f:
+        config = yaml.safe_load(f)
+    model_path = config["model_path"]
+    output_dir = config["output_dir"]
+
     parser = argparse.ArgumentParser(description='Furniture Repair Model')
     parser.add_argument('--camera', action='store_true', help='Capture image using Pi Camera')
     parser.add_argument('--upload', type=str, help='Path to the user-uploaded image')
@@ -27,14 +36,14 @@ def main():
         generator.generate_dataset(num_samples=args.samples)
         print("Synthetic data generation complete!")
         return
-    
+
     # Train model if requested
     if args.train:
         print("Training damage detection model...")
         train_model()
         print("Model training complete!")
         return
-    
+
     # Image capture/upload logic
     if args.camera:
         image_path = capture_from_camera()
@@ -46,7 +55,6 @@ def main():
         raise ValueError("Please provide --camera or --upload argument.")
 
     # Check if model exists
-    model_path = "./models/damage_detection/part_detector.pth"
     if not os.path.exists(model_path):
         print("Model not found! Please train the model first using --train flag")
         print("Or generate synthetic data first using --generate-data flag")
@@ -72,7 +80,6 @@ def main():
             furniture_type = "Chair"
             damaged_part = "Unknown"
             
-            # Try to match damage with detected parts
             if "detected_parts" in damage_report and damage_report["detected_parts"]:
                 if i < len(damage_report["detected_parts"]):
                     damaged_part = damage_report["detected_parts"][i]["part"]
@@ -105,7 +112,8 @@ def main():
             render_step_visual(
                 "./data/partnet_data/chair/model.obj",
                 highlighted_part_idx=i,
-                save_path=f"./data/visual_guides/{part_name}_repair_guide.png"
+                save_path=f"./data/visual_guides/{part_name}_repair_guide.png",
+                damage_report_path="./outputs/stage1_parts.json"
             )
 
     # Stage II: Hierarchical Graph Generation

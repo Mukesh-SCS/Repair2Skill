@@ -1,21 +1,31 @@
-# ==================== requirements.txt ====================
-torch>=1.9.0
-torchvision>=0.10.0
-opencv-python>=4.5.0
-pillow>=8.0.0
-numpy>=1.21.0
-matplotlib>=3.3.0
-openai>=1.0.0
-python-dotenv>=0.19.0
-requests>=2.25.0
-json5>=0.9.0
-tqdm>=4.62.0
-albumentations>=1.0.0
-pycocotools>=2.0.0
-# detectron2>=0.6.0
-transformers>=4.20.0
-# For Raspberry Pi camera
-picamera2>=0.3.0
-# For 3D visualization
-open3d>=0.13.0
-trimesh>=3.9.0
+# Core deep learning
+torch>=2.3.0
+torchvision>=0.17.0
+pycocotools>=2.0.7
+
+# Image processing
+opencv-python>=4.10.0
+pillow>=10.3.0
+numpy>=1.26.0
+matplotlib>=3.9.0
+albumentations>=1.4.0
+
+# API and utilities
+openai>=1.35.0
+python-dotenv>=1.0.1
+requests>=2.32.0
+json5>=0.9.25
+tqdm>=4.66.0
+transformers>=4.43.0
+
+# Raspberry Pi camera
+picamera2>=0.3.17
+
+# 3D visualization
+open3d>=0.18.0
+trimesh>=4.3.0
+
+# Optional (uncomment if needed)
+# pytesseract>=0.3.10
+# flask>=3.0.0
+# onnx>=1.16.0

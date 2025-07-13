@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
-from torchvision.models import resnet50
+from torchvision.models import mobilenet_v3_small  # Add this import
 import json
 import cv2
 import numpy as np
@@ -60,15 +60,13 @@ class FurnitureRepairModel(nn.Module):
     def __init__(self, num_damage_classes=5, num_part_classes=8):
         super(FurnitureRepairModel, self).__init__()
         
-        # Use ResNet50 as backbone
-        self.backbone = resnet50(pretrained=True)
+        # Use MobileNetV3-Small as backbone
+        self.backbone = mobilenet_v3_small(pretrained=True)
+        self.backbone.classifier = nn.Identity()  # Remove final classification layer
         
-        # Remove final classification layer
-        self.backbone.fc = nn.Identity()
-        
-        # Add custom heads
+        # Add custom heads (input features = 1024 for mobilenet_v3_small)
         self.damage_classifier = nn.Sequential(
-            nn.Linear(2048, 512),
+            nn.Linear(1024, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, num_damage_classes),
@@ -76,7 +74,7 @@ class FurnitureRepairModel(nn.Module):
         )
         
         self.part_classifier = nn.Sequential(
-            nn.Linear(2048, 512),
+            nn.Linear(1024, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, num_part_classes),

@@ -1,28 +1,29 @@
-# ==================== scripts/detect_damage.py ====================
 import os
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
 import json
 import numpy as np
-from scripts.train_part_detector import FurnitureRepairModel
+from torchvision.models.detection import fasterrcnn_resnet50_fpn
+from scripts.train_detector_frcnn import FurnitureDetectionDataset
+
 
 def detect_parts(image_path, model_path):
-    """Detect parts and damage in furniture image"""
+    """Detect parts and damage in furniture image with bounding boxes"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Load model
-    model = FurnitureRepairModel()
+    model = fasterrcnn_resnet50_fpn(pretrained=False)
+    num_classes = 14  # From model_config.yaml
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = torchvision.models.detection.faster_rcnn.FastRCNNPredictor(in_features, num_classes)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     model.eval()
     
-    # Load and preprocess image
+    # Preprocess image
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
     ])
     
     image = Image.open(image_path).convert('RGB')
@@ -30,19 +31,13 @@ def detect_parts(image_path, model_path):
     
     # Inference
     with torch.no_grad():
-        damage_outputs, part_outputs = model(image_tensor)
+        prediction = model(image_tensor)[0]
     
     # Process outputs
-    damage_types = ["missing", "cracked", "broken", "loose", "scratched"]
-    part_types = [
-        "seat", "back", "front_left_leg", "front_right_leg", 
-        "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"
-    ]
+    class_names = ["__background__", "seat", "back", "front_left_leg", "front_right_leg",
+                   "back_left_leg", "back_right_leg", "armrest_left", "armrest_right",
+                   "missing", "cracked", "broken", "loose", "scratched"]
     
-    damage_probs = torch.sigmoid(damage_outputs).cpu().numpy()[0]
-    part_probs = torch.sigmoid(part_outputs).cpu().numpy()[0]
-    
-    # Create results
     results = {
         "detected_damages": [],
         "detected_parts": []
@@ -51,25 +46,28 @@ def detect_parts(image_path, model_path):
     # Threshold for detection
     threshold = 0.5
     
-    for i, prob in enumerate(damage_probs):
-        if prob > threshold:
-            results["detected_damages"].append({
-                "type": damage_types[i],
-                "confidence": float(prob)
-            })
-    
-    for i, prob in enumerate(part_probs):
-        if prob > threshold:
-            results["detected_parts"].append({
-                "part": part_types[i],
-                "confidence": float(prob)
-            })
+    for box, label, score in zip(prediction['boxes'], prediction['labels'], prediction['scores']):
+        if score > threshold:
+            class_name = class_names[label]
+            if class_name in ["seat", "back", "front_left_leg", "front_right_leg",
+                             "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"]:
+                results["detected_parts"].append({
+                    "part": class_name,
+                    "confidence": float(score),
+                    "bbox": box.cpu().numpy().tolist()
+                })
+            else:
+                results["detected_damages"].append({
+                    "type": class_name,
+                    "confidence": float(score),
+                    "bbox": box.cpu().numpy().tolist()
+                })
     
     return results
 
 def detect_damage_from_image(image_path):
     """Main function to detect damage from image"""
-    model_path = "./models/damage_detection/part_detector.pth"
+    model_path = "./models/damage_detection/frcnn_model.pth"
     
     if not os.path.exists(model_path):
         print("Model not found. Please train the model first.")
