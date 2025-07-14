@@ -1,0 +1,58 @@
+{
+  "detected_damages": [
+    {
+      "type": "missing",
+      "confidence": 0.7149645686149597
+    },
+    {
+      "type": "cracked",
+      "confidence": 0.5006505846977234
+    },
+    {
+      "type": "broken",
+      "confidence": 0.5183894634246826
+    },
+    {
+      "type": "loose",
+      "confidence": 0.6114746332168579
+    },
+    {
+      "type": "scratched",
+      "confidence": 0.5245492458343506
+    }
+  ],
+  "detected_parts": [
+    {
+      "part": "seat",
+      "confidence": 0.5658813118934631
+    },
+    {
+      "part": "back",
+      "confidence": 0.5997758507728577
+    },
+    {
+      "part": "front_left_leg",
+      "confidence": 0.6636521220207214
+    },
+    {
+      "part": "front_right_leg",
+      "confidence": 0.5474758744239807
+    },
+    {
+      "part": "back_left_leg",
+      "confidence": 0.5085101127624512
+    },
+    {
+      "part": "back_right_leg",
+      "confidence": 0.5072987675666809
+    },
+    {
+      "part": "armrest_left",
+      "confidence": 0.5429868102073669
+    },
+    {
+      "part": "armrest_right",
+      "confidence": 0.5051615834236145
+    }
+  ]
+}

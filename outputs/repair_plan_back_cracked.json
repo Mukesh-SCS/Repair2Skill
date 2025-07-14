@@ -1,0 +1,63 @@
+{
+  "repair_plan": {
+    "tools_needed": [
+      "wood glue",
+      "sandpaper",
+      "clamps",
+      "wood filler",
+      "paint or finish"
+    ],
+    "materials_needed": [
+      "clean cloth",
+      "replacement wood (if necessary)"
+    ],
+    "safety_precautions": [
+      "wear protective gloves",
+      "work in a well-ventilated area",
+      "avoid direct contact with skin or eyes with wood glue"
+    ],
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Clean the cracked area with a clean cloth to remove any dust or debris.",
+        "estimated_time": "5 minutes"
+      },
+      {
+        "step_number": 2,
+        "description": "Apply wood glue into the crack.",
+        "estimated_time": "5 minutes"
+      },
+      {
+        "step_number": 3,
+        "description": "Use clamps to hold the cracked area together while the glue dries.",
+        "estimated_time": "24 hours"
+      },
+      {
+        "step_number": 4,
+        "description": "Once the glue is dried, sand the area to make it smooth.",
+        "estimated_time": "15 minutes"
+      },
+      {
+        "step_number": 5,
+        "description": "If the crack is still visible, apply wood filler to the area and let it dry.",
+        "estimated_time": "2-3 hours"
+      },
+      {
+        "step_number": 6,
+        "description": "After the filler is dried, sand the area again until it is smooth and even with the rest of the chair back.",
+        "estimated_time": "15 minutes"
+      },
+      {
+        "step_number": 7,
+        "description": "Apply paint or finish to match the rest of the chair.",
+        "estimated_time": "30 minutes"
+      }
+    ],
+    "tips": [
+      "Make sure the glue is fully dried before proceeding to the next step.",
+      "When sanding, always go in the direction of the wood grain to avoid scratches.",
+      "Choose a wood filler that matches the color of your chair for best results."
+    ],
+    "difficulty_level": "medium"
+  }
+}

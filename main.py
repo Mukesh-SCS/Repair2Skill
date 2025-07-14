@@ -3,7 +3,7 @@ import argparse
 import os
 import json
 from scripts.capture_image import capture_from_camera
-from scripts.detect_damage import detect_damage_from_image
+from scripts.detect_damage import detect_damage_and_parts
 from scripts.render_visual_guidance import render_step_visual
 from scripts.generate_synthetic_data import SyntheticDataGenerator
 from scripts.train_part_detector import train_model
@@ -55,7 +55,7 @@ def main():
 
     # Detect damage from the image (Stage I output)
     print("Detecting damage and parts...")
-    damage_report = detect_damage_from_image(image_path, model_path=model_path)
+    damage_report = detect_damage_and_parts(image_path, model_path=model_path)
     print("Stage I Output (Detected Parts JSON):")
     print(json.dumps(damage_report, indent=2))
 

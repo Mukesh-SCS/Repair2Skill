@@ -5,5 +5,5 @@ __pycache__/
 *.pyc
 .env
 #data/*
-outputs/*
+#outputs/*
 models/*

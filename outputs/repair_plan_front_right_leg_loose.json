@@ -1,0 +1,50 @@
+{
+  "repair_plan": {
+    "tools_needed": [
+      "Screwdriver",
+      "Wood glue",
+      "Clamp"
+    ],
+    "materials_needed": [
+      "Wood Screws"
+    ],
+    "safety_precautions": [
+      "Always wear safety glasses to protect your eyes from dust and debris",
+      "Use gloves to protect your hands from sharp objects and chemicals",
+      "Ensure the chair is on a stable and flat surface before starting the repair"
+    ],
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Inspect the chair leg to identify the exact spot where it is loose.",
+        "estimated_time": "5 minutes"
+      },
+      {
+        "step_number": 2,
+        "description": "Use the screwdriver to tighten any visible screws that have become loose.",
+        "estimated_time": "10 minutes"
+      },
+      {
+        "step_number": 3,
+        "description": "If the leg is still loose, apply wood glue to the joints and fasten the leg to the chair body using the clamp.",
+        "estimated_time": "15 minutes"
+      },
+      {
+        "step_number": 4,
+        "description": "Let the glue dry according to the manufacturer's instructions. This usually takes around 24 hours.",
+        "estimated_time": "24 hours"
+      },
+      {
+        "step_number": 5,
+        "description": "After the glue has dried, remove the clamp and check the stability of the leg. If it's still loose, consider using wood screws for additional reinforcement.",
+        "estimated_time": "10 minutes"
+      }
+    ],
+    "tips": [
+      "Always work in a well-ventilated area when using wood glue",
+      "Use the right size of screwdriver to avoid stripping the screw head",
+      "If the leg is still loose after using wood glue, it may be necessary to replace the leg entirely"
+    ],
+    "difficulty_level": "medium"
+  }
+}

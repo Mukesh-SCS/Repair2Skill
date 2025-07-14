@@ -3,6 +3,7 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 from torchvision import models
 from PIL import Image
+from scripts.train_part_detector import FurnitureRepairModel
 import json
 import os
 
@@ -34,7 +35,7 @@ class DamagePartClassifier(nn.Module):
         return self.damage_classifier(x), self.part_classifier(x)
 
 def load_model(model_path):
-    model = DamagePartClassifier()
+    model = FurnitureRepairModel()
     model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
     model.eval()
     return model
