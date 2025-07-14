@@ -4,5 +4,6 @@ venv/
 __pycache__/
 *.pyc
 .env
-#data/user_images/*
-#outputs/*
+#data/*
+outputs/*
+models/*

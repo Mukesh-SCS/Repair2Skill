@@ -1,4 +1,5 @@
 # ==================== scripts/evaluate_model.py ====================
+import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -7,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import classification_report, confusion_matrix
 import seaborn as sns
-from scripts.train_part_detector import FurnitureDataset, FurnitureRepairModel
+from train_part_detector import FurnitureDataset, FurnitureRepairModel
 import torchvision.transforms as transforms
 
 def evaluate_model(model_path, test_data_path):
@@ -130,3 +131,14 @@ def evaluate_model(model_path, test_data_path):
     print(f"\nOverall Test Loss: {results['total_loss']:.4f}")
     print(f"Damage Detection Accuracy: {results['damage_accuracy']:.4f}")
     print(f"Part Detection Accuracy: {results['part_accuracy']:.4f}")
+
+
+if __name__ == "__main__":
+    
+    parser = argparse.ArgumentParser(description="Evaluate FurnitureRepairModel on test data")
+    parser.add_argument("--test-data-path", required=True, help="Path to test dataset directory")
+    parser.add_argument("--model-path", required=True, help="Path to trained model .pth file")
+
+    args = parser.parse_args()
+    evaluate_model(args.model_path, args.test_data_path)
+   

@@ -7,7 +7,9 @@ pycocotools>=2.0.7
 opencv-python>=4.10.0
 pillow>=10.3.0
 numpy>=1.26.0
+scikit-learn
 matplotlib>=3.9.0
+seaborn
 albumentations>=1.4.0
 
 # API and utilities
@@ -18,8 +20,8 @@ json5>=0.9.25
 tqdm>=4.66.0
 transformers>=4.43.0
 
-# Raspberry Pi camera
-picamera2>=0.3.17
+# Raspberry Pi camera (commented out for Windows)
+# picamera2>=0.3.17
 
 # 3D visualization
 open3d>=0.18.0

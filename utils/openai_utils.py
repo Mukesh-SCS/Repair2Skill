@@ -10,6 +10,8 @@ def generate_repair_plan(furniture_type, damaged_part, assembly_step, damage_typ
     """Generate repair plan using OpenAI GPT-4"""
     
     client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    if not client:
+        raise ValueError("OpenAI client initialization failed. Check your API key.")
     
     prompt = f"""
     You are an expert furniture repair technician. Given the following information about a damaged {furniture_type}:
