@@ -97,13 +97,13 @@ OPENAI_API_KEY=sk-...
 
 ## ✅ Step 4: Run the Pipeline
 
-### 1. Place your test image
+# 1. Place your test image
 Example:
 ```
 ./data/user_images/my_broken_chair.jpg
 ```
 
-### 2. Run:
+# 2. Run:
 - You can run the pipeline either with a captured image from the Raspberry Pi camera or an uploaded image.
 
 ## 🔴 Option 1: Use Pi Camera
@@ -162,12 +162,6 @@ python3 -m venv venv
 source venv/bin/activate  # Or `venv\Scripts\activate` on Windows
 pip install -r requirements.txt
 ```
-
-2. Add your OpenAI API Key in `.env`
-```
-OPENAI_API_KEY=your-api-key-here
-```
-
 ---
 
 ## 📚 References
