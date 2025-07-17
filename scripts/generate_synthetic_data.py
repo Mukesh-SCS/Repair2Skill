@@ -1,10 +1,8 @@
-
-# ==================== scripts/generate_synthetic_data.py ====================
 import os
 import json
 import numpy as np
 import cv2
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 import random
 import albumentations as A
 from tqdm import tqdm
@@ -15,6 +13,7 @@ class SyntheticDataGenerator:
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
         os.makedirs(os.path.join(output_dir, "annotations"), exist_ok=True)
+        os.makedirs("./synthetic_preview", exist_ok=True)
 
         self.chair_parts = [
             "seat", "back", "front_left_leg", "front_right_leg", 
@@ -31,7 +30,7 @@ class SyntheticDataGenerator:
             A.HueSaturationValue(p=0.3),
             A.RandomGamma(p=0.3),
             A.GaussNoise(p=0.3),
-            A.Blur(blur_limit=3, p=0.2),
+            A.Blur(blur_limit=3, p=0.3),
         ])
 
     def generate_chair_template(self, width=640, height=480):
@@ -50,7 +49,7 @@ class SyntheticDataGenerator:
         }
 
         for part, bbox in parts.items():
-            draw.rectangle(bbox, outline='black', width=2, fill='lightgray')
+            draw.rectangle(bbox, fill='lightgray', outline='black', width=2)
 
         return img, parts
 
@@ -61,25 +60,41 @@ class SyntheticDataGenerator:
             part = damage["part"]
             damage_type = damage["type"]
 
-            if part in parts:
-                bbox = parts[part]
-                if damage_type == "missing":
-                    draw.rectangle(bbox, fill='white', outline='white')
-                    parts.pop(part)  # Remove from annotation
-                elif damage_type == "cracked":
-                    x1, y1, x2, y2 = bbox
-                    for _ in range(random.randint(2, 5)):
-                        draw.line(
-                            [(random.randint(x1, x2), random.randint(y1, y2)),
-                             (random.randint(x1, x2), random.randint(y1, y2))],
-                            fill='red', width=2)
-                elif damage_type == "broken":
-                    x1, y1, x2, y2 = bbox
-                    draw.rectangle([x1, y1, x2, y2], fill='darkgray')
-                    for _ in range(random.randint(3, 7)):
-                        px = random.randint(x1, x2)
-                        py = random.randint(y1, y2)
-                        draw.ellipse([px-5, py-5, px+5, py+5], fill='gray')
+            if part not in parts:
+                continue
+
+            x1, y1, x2, y2 = parts[part]
+
+            if damage_type == "missing":
+                draw.rectangle([x1, y1, x2, y2], fill='white', outline='white')
+
+            elif damage_type == "cracked":
+                for _ in range(random.randint(3, 6)):
+                    draw.line(
+                        [(random.randint(x1, x2), random.randint(y1, y2)),
+                         (random.randint(x1, x2), random.randint(y1, y2))],
+                        fill='red', width=2)
+
+            elif damage_type == "scratched":
+                for _ in range(random.randint(4, 8)):
+                    draw.line(
+                        [(random.randint(x1, x2), random.randint(y1, y2)),
+                         (random.randint(x1, x2), random.randint(y1, y2))],
+                        fill='blue', width=1)
+
+            elif damage_type == "broken":
+                draw.rectangle([x1, y1, x2, y2], fill='darkgray')
+                for _ in range(5):
+                    px = random.randint(x1, x2)
+                    py = random.randint(y1, y2)
+                    draw.ellipse([px-4, py-4, px+4, py+4], fill='gray')
+
+            elif damage_type == "loose":
+                offset = random.randint(3, 10)
+                draw.rectangle(
+                    [x1 + offset, y1 + offset, x2 + offset, y2 + offset],
+                    outline='orange', width=2)
+
         return img
 
     def generate_dataset(self, num_samples=1000):
@@ -100,7 +115,8 @@ class SyntheticDataGenerator:
                     "severity": round(random.uniform(0.3, 1.0), 2)
                 })
 
-            img = self.apply_damage(img, parts.copy(), damage_info)
+            img = self.apply_damage(img, parts, damage_info)
+
             img_np = np.array(img)
             augmented = self.augmentation(image=img_np)
             img_augmented = Image.fromarray(augmented['image'])
@@ -109,11 +125,14 @@ class SyntheticDataGenerator:
             img_path = os.path.join(self.output_dir, "images", img_filename)
             img_augmented.save(img_path)
 
+            if i < 5:
+                img_augmented.save(f"./synthetic_preview/synthetic_{i:03d}.png")
+
             annotation = {
                 "image_id": i,
                 "filename": img_filename,
-                "width": img_augmented.width,
-                "height": img_augmented.height,
+                "width": img.width,
+                "height": img.height,
                 "damages": damage_info,
                 "parts": parts
             }

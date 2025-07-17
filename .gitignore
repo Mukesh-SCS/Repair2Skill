@@ -4,6 +4,7 @@ venv/
 __pycache__/
 *.pyc
 .env
-data/*
+data/synthetic_damage/*
 outputs/*
 models/*
+data/synthetic_damage/*
