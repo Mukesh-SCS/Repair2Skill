@@ -1,5 +1,4 @@
 import matplotlib.pyplot as plt
-import numpy as np
 import os
 import json
 
@@ -8,7 +7,6 @@ def render_step_visual(model_path, highlighted_part_idx, save_path, damage_repor
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))
 
-    # Define chair parts (reverse canvas horizontally to match orientation)
     chair_parts = {
         "seat": {"coords": [3, 3, 7, 4], "color": "lightblue"},
         "back": {"coords": [4, 1, 6, 3], "color": "lightgreen"},
@@ -20,29 +18,33 @@ def render_step_visual(model_path, highlighted_part_idx, save_path, damage_repor
         "armrest_right": {"coords": [6, 2, 7.5, 2.5], "color": "yellow"},
     }
 
-    damaged_parts = set()
-
+    damaged_parts_with_type = {}
     if damage_report_path and os.path.exists(damage_report_path):
         with open(damage_report_path, 'r') as f:
             damage_report = json.load(f)
-
-        if "detected_damages" in damage_report and "detected_parts" in damage_report:
-            for part in damage_report["detected_parts"]:
-                part_name = part["part"]
-                damaged_parts.add(part_name)
+        if "detected_pairs" in damage_report:
+            for dp in damage_report["detected_pairs"]:
+                damaged_parts_with_type[dp["part"]] = dp["damage_type"]
 
     part_names = list(chair_parts.keys())
 
     for i, (part_name, part_info) in enumerate(chair_parts.items()):
         x1, y1, x2, y2 = part_info["coords"]
-        color = "red" if part_name in damaged_parts or i == highlighted_part_idx else part_info["color"]
-        width = 3 if part_name in damaged_parts or i == highlighted_part_idx else 1
+        if i == highlighted_part_idx:
+            color = 'red'  # repair focus
+            width = 4
+        elif part_name in damaged_parts_with_type:
+            damage_type = damaged_parts_with_type[part_name]
+            color = 'darkred' if damage_type == 'broken' else 'orange'
+            width = 3
+        else:
+            color = part_info["color"]
+            width = 1
 
         rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1,
                              facecolor=color, edgecolor='black', linewidth=width)
         ax.add_patch(rect)
 
-        # Add part label
         ax.text((x1 + x2) / 2, (y1 + y2) / 2, part_name.replace('_', ' '),
                 ha='center', va='center', fontsize=8, weight='bold')
 
@@ -51,7 +53,6 @@ def render_step_visual(model_path, highlighted_part_idx, save_path, damage_repor
         ax.set_title(f"Repair Focus: {part_name.replace('_', ' ').title()}",
                      fontsize=14, weight='bold')
 
-        # Add arrow pointing to highlighted part
         part_coords = chair_parts[part_name]["coords"]
         cx = (part_coords[0] + part_coords[2]) / 2
         cy = (part_coords[1] + part_coords[3]) / 2

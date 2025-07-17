@@ -7,9 +7,8 @@ from scripts.detect_damage import detect_damage_and_parts
 from scripts.render_visual_guidance import render_step_visual
 from scripts.generate_synthetic_data import SyntheticDataGenerator
 from scripts.train_part_detector import train_model
-from utils.openai_utils import generate_repair_plan
-from utils.assembly_plan_utils import parse_manual
-
+from scripts.generate_repair_plan import generate_repair_plan
+# from utils.assembly_plan_utils import parse_manual  # commented out, as in your original
 
 def main():
     parser = argparse.ArgumentParser(description='Furniture Repair Model')
@@ -56,7 +55,7 @@ def main():
     # Detect damage from the image (Stage I output)
     print("Detecting damage and parts...")
     damage_report = detect_damage_and_parts(image_path, model_path=model_path)
-    print("Stage I Output (Detected Parts JSON):")
+    print("Stage I Output (Detected Damage-Part Pairs):")
     print(json.dumps(damage_report, indent=2))
 
     # Save Stage I output
@@ -64,23 +63,17 @@ def main():
     with open("./outputs/stage1_parts.json", "w") as f:
         json.dump(damage_report, f, indent=2)
 
-    # Generate repair plan for each detected damage
-    if "detected_damages" in damage_report and damage_report["detected_damages"]:
+    if "detected_pairs" in damage_report and damage_report["detected_pairs"]:
         print("\nGenerating repair plans...")
-
-        for i, damage in enumerate(damage_report["detected_damages"]):
+        for i, dp in enumerate(damage_report["detected_pairs"]):
             furniture_type = "Chair"
-            damaged_part = "Unknown"
+            damaged_part = dp["part"]
+            damage_type = dp["damage_type"]
 
-            if "detected_parts" in damage_report and damage_report["detected_parts"]:
-                if i < len(damage_report["detected_parts"]):
-                    damaged_part = damage_report["detected_parts"][i]["part"]
-
-            damage_type = damage["type"]
             assembly_step = f"Repair the {damaged_part} that is {damage_type}"
 
             print(f"\nGenerating repair plan for {damaged_part} ({damage_type})...")
-            plan = generate_repair_plan(furniture_type, damaged_part, assembly_step, damage_type)
+            plan = generate_repair_plan(furniture_type, damaged_part, damage_type)
 
             plan_filename = f"./outputs/repair_plan_{damaged_part}_{damage_type}.json"
             with open(plan_filename, "w") as f:
@@ -92,20 +85,29 @@ def main():
 
     os.makedirs("./data/visual_guides", exist_ok=True)
 
-    # Render visual guide for detected parts
-    if "detected_parts" in damage_report and damage_report["detected_parts"]:
-        for i, part in enumerate(damage_report["detected_parts"]):
-            part_name = part["part"]
-            confidence = part["confidence"]
+    # Render visual guide focusing on each damaged part
+    if "detected_pairs" in damage_report and damage_report["detected_pairs"]:
+        part_names = [
+            "seat", "back", "front_left_leg", "front_right_leg",
+            "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"
+        ]
+        for dp in damage_report["detected_pairs"]:
+            part_name = dp["part"]
+            if part_name in part_names:
+                part_idx = part_names.index(part_name)
+            else:
+                part_idx = -1
 
-            print(f"Rendering visual guide for {part_name} (confidence: {confidence:.2f})...")
+            print(f"Rendering visual guide for {part_name} ...")
             render_step_visual(
-                "./data/partnet_data/chair/model.obj",
-                highlighted_part_idx=i,
+                model_path=None,  # Not used in this function currently
+                highlighted_part_idx=part_idx,
                 save_path=f"./data/visual_guides/{part_name}_repair_guide.png",
                 damage_report_path="./outputs/stage1_parts.json"
             )
 
+    # Optional: Assembly graph parsing, disabled here
+    """
     print("\nGenerating assembly graph...")
     assembly_graph = parse_manual("./data/furniture_manuals/sample_manual.png", "./outputs/stage1_parts.json")
     print("Stage II Output (Assembly Graph):")
@@ -113,14 +115,13 @@ def main():
 
     with open("./outputs/stage2_assembly_graph.json", "w") as f:
         json.dump(assembly_graph, f, indent=2)
+    """
 
     print("\nRepair analysis complete!")
     print("Check the ./outputs/ directory for results:")
     print("- stage1_parts.json: Detected parts and damages")
-    print("- stage2_assembly_graph.json: Repair sequence graph")
     print("- repair_plan_*.json: Individual repair plans")
     print("- ./data/visual_guides/: Visual repair guides")
-
 
 if __name__ == "__main__":
     main()

@@ -125,8 +125,8 @@ class SyntheticDataGenerator:
             img_path = os.path.join(self.output_dir, "images", img_filename)
             img_augmented.save(img_path)
 
-            if i < 5:
-                img_augmented.save(f"./synthetic_preview/synthetic_{i:03d}.png")
+            #if i < 5:
+               # img_augmented.save(f"./synthetic_preview/synthetic_{i:03d}.png")
 
             annotation = {
                 "image_id": i,
