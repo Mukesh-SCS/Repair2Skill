@@ -8,7 +8,7 @@ from scripts.render_visual_guidance import render_step_visual
 from scripts.generate_synthetic_data import SyntheticDataGenerator
 from scripts.train_part_detector import train_model
 from scripts.generate_repair_plan import generate_repair_plan
-# from utils.assembly_plan_utils import parse_manual  # commented out, as in your original
+# from utils.assembly_plan_utils import parse_manual  # commented out
 
 def main():
     parser = argparse.ArgumentParser(description='Furniture Repair Model')
@@ -55,56 +55,78 @@ def main():
     # Detect damage from the image (Stage I output)
     print("Detecting damage and parts...")
     damage_report = detect_damage_and_parts(image_path, model_path=model_path)
-    print("Stage I Output (Detected Damage-Part Pairs):")
+    print("Raw Detection Output:")
     print(json.dumps(damage_report, indent=2))
 
-    # Save Stage I output
-    os.makedirs("./outputs", exist_ok=True)
-    with open("./outputs/stage1_parts.json", "w") as f:
-        json.dump(damage_report, f, indent=2)
-
-    if "detected_pairs" in damage_report and damage_report["detected_pairs"]:
-        print("\nGenerating repair plans...")
-        for i, dp in enumerate(damage_report["detected_pairs"]):
-            furniture_type = "Chair"
-            damaged_part = dp["part"]
-            damage_type = dp["damage_type"]
-
-            assembly_step = f"Repair the {damaged_part} that is {damage_type}"
-
-            print(f"\nGenerating repair plan for {damaged_part} ({damage_type})...")
-            plan = generate_repair_plan(furniture_type, damaged_part, damage_type)
-
-            plan_filename = f"./outputs/repair_plan_{damaged_part}_{damage_type}.json"
-            with open(plan_filename, "w") as f:
-                json.dump(plan, f, indent=2)
-
-            print(f"Repair plan saved to: {plan_filename}")
-    else:
+    if "detected_pairs" not in damage_report or not damage_report["detected_pairs"]:
         print("No damage detected in the image.")
+        return
+
+    # Filtering function
+    def filter_detected_pairs(detected_pairs, damage_threshold=0.7, part_threshold=0.7):
+        # Filter pairs by thresholds
+        filtered = [p for p in detected_pairs if p['damage_confidence'] >= damage_threshold and p['part_confidence'] >= part_threshold]
+
+        # Keep only highest damage confidence per part
+        best_pairs = {}
+        for p in filtered:
+            part = p['part']
+            if part not in best_pairs or p['damage_confidence'] > best_pairs[part]['damage_confidence']:
+                best_pairs[part] = p
+
+        return list(best_pairs.values())
+
+    filtered_pairs = filter_detected_pairs(damage_report["detected_pairs"], damage_threshold=0.7, part_threshold=0.7)
+
+    if not filtered_pairs:
+        print("No confident damage-part pairs detected after filtering.")
+        return
+
+    print("\nFiltered Damage-Part Pairs:")
+    print(json.dumps(filtered_pairs, indent=2))
+
+    # Save filtered detection results
+    os.makedirs("./outputs", exist_ok=True)
+    with open("./outputs/stage1_parts_filtered.json", "w") as f:
+        json.dump({"detected_pairs": filtered_pairs}, f, indent=2)
+
+    print("\nGenerating repair plans...")
+    for dp in filtered_pairs:
+        furniture_type = "Chair"
+        damaged_part = dp["part"]
+        damage_type = dp["damage_type"]
+
+        print(f"Generating repair plan for {damaged_part} ({damage_type})...")
+        plan = generate_repair_plan(furniture_type, damaged_part, damage_type)
+
+        plan_filename = f"./outputs/repair_plan_{damaged_part}_{damage_type}.json"
+        with open(plan_filename, "w") as f:
+            json.dump(plan, f, indent=2)
+
+        print(f"Saved repair plan: {plan_filename}")
 
     os.makedirs("./data/visual_guides", exist_ok=True)
 
-    # Render visual guide focusing on each damaged part
-    if "detected_pairs" in damage_report and damage_report["detected_pairs"]:
-        part_names = [
-            "seat", "back", "front_left_leg", "front_right_leg",
-            "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"
-        ]
-        for dp in damage_report["detected_pairs"]:
-            part_name = dp["part"]
-            if part_name in part_names:
-                part_idx = part_names.index(part_name)
-            else:
-                part_idx = -1
+    print("\nRendering visual guides for damaged parts...")
+    part_names = [
+        "seat", "back", "front_left_leg", "front_right_leg",
+        "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"
+    ]
 
-            print(f"Rendering visual guide for {part_name} ...")
-            render_step_visual(
-                model_path=None,  # Not used in this function currently
-                highlighted_part_idx=part_idx,
-                save_path=f"./data/visual_guides/{part_name}_repair_guide.png",
-                damage_report_path="./outputs/stage1_parts.json"
-            )
+    for dp in filtered_pairs:
+        part_name = dp["part"]
+        if part_name in part_names:
+            part_idx = part_names.index(part_name)
+        else:
+            part_idx = -1
+
+        print(f"Rendering visual guide for {part_name}...")
+        render_step_visual(
+            model_path=None,
+            highlighted_part_idx=part_idx,
+            save_path=f"./data/visual_guides/{part_name}_repair_guide.png",
+            damage_report_path="./outputs/stage1_parts_filtered.json"
+        )
 
     # Optional: Assembly graph parsing, disabled here
     """

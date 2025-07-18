@@ -52,6 +52,19 @@ def detect_damage_and_parts(image_path, model_path, damage_threshold=0.5, part_t
         "detected_pairs": detected_pairs
     }
 
+def filter_detected_pairs(detected_pairs, damage_threshold=0.7, part_threshold=0.7):
+    # Filter pairs by thresholds
+    filtered = [p for p in detected_pairs if p['damage_confidence'] >= damage_threshold and p['part_confidence'] >= part_threshold]
+
+    # Keep only highest damage confidence per part
+    best_pairs = {}
+    for p in filtered:
+        part = p['part']
+        if part not in best_pairs or p['damage_confidence'] > best_pairs[part]['damage_confidence']:
+            best_pairs[part] = p
+
+    return list(best_pairs.values())
+
 if __name__ == "__main__":
     # For quick test
     result = detect_damage_and_parts("example.jpg", "./models/damage_detection/part_detector.pth")
