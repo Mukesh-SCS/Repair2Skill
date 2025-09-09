@@ -1,4 +1,4 @@
-# 🛠️ Repair2Skill on Raspberry Pi 5
+# 🛠️ Repair2Skill on Raspberry Pi 5 using OPENAI API
 
 **Repair2Skill** is an AI-powered framework that enables robots (or intelligent agents) to detect and plan repairs for broken furniture parts. Inspired by [Manual2Skill (RSS 2025)](https://github.com/owensun2004/Manual2Skill), this project extends the original idea to handle **furniture repair** by using a camera, part detection, and **vision-language models (VLMs)** like GPT-4o.
 
@@ -20,15 +20,11 @@ This implementation runs on a **Raspberry Pi 5** equipped with a camera for real
 ```bash
 FurnitureRepairModel/
 ├── data/
-│   ├── partnet_data/
-│   ├── ikea_manuals/
 │   ├── synthetic_damage/
 │   └── user_images/
 │
 ├── models/
 │   ├── damage_detection/
-│   ├── pose_estimation/
-│   └── openai_integration/
 │
 ├── scripts/
 │   ├── generate_synthetic_data.py
@@ -46,13 +42,12 @@ FurnitureRepairModel/
 │
 ├── utils/
 │   ├── assembly_plan_utils.py
-│   ├── visualization_utils.py
 │   └── openai_utils.py
 │
 ├── configs/
 │   └── model_config.yaml
 │
-├── docs/
+├── Outputs/
 │   └── training_curve.png
 │
 ├── requirements.txt
@@ -75,8 +70,10 @@ python scripts/generate_synthetic_data.py --samples 500
 This saves images and `annotations.json` to `./data/synthetic_damage/`.
 
 ### 2. Train the Model
-```bash
-python scripts/train_part_detector.py --data-dir ./data/synthetic_damage/
+```bash 
+    # training
+    python main.py --train              → MobileNet classifier (`train_part_detector.py`)
+    python main.py --train-frcnn        → Faster R-CNN detector  (`train_detector_frcnn.py`)
 ```
 
 After training, your model will be saved to:
@@ -115,10 +112,6 @@ python main.py --camera
 ```bash
 python main.py --upload ./data/user_images/my_broken_chair.jpg
 ```
-```bash
-python main.py --upload ./data/user_images/my_broken_chair.jpg
-```
-
 ---
 
 ## 🔍 What Happens Internally
@@ -148,7 +141,6 @@ Here's the training progress (losses over 20 epochs): `./Repair2Skill/outputs/tr
 - `generate_synthetic_data.py`: Generate labeled synthetic furniture damage dataset.
 - `repair_executor.py`: Executes or simulates repair actions based on plan.
 - `model_optimization.py`: Prepares models for low-power devices (e.g., quantization).
-- `pose_estimation/estimate_pose.py`: Placeholder for pose estimation support.
 
 ---
 
@@ -162,12 +154,6 @@ python3 -m venv venv
 source venv/bin/activate  # Or `venv\Scripts\activate` on Windows
 pip install -r requirements.txt
 ```
-
-2. Add your OpenAI API Key in `.env`
-```
-OPENAI_API_KEY=your-api-key-here
-```
-
 ---
 
 ## 📚 References
