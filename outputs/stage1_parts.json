@@ -2,45 +2,33 @@
   "detected_damages": [
     {
       "type": "missing",
-      "confidence": 0.7310312390327454
-    },
-    {
-      "type": "broken",
-      "confidence": 0.7310583591461182
+      "confidence": 0.7308327555656433
     },
     {
       "type": "loose",
-      "confidence": 0.694014310836792
+      "confidence": 0.6780956983566284
     }
   ],
   "detected_parts": [
     {
+      "part": "seat",
+      "confidence": 0.689055860042572
+    },
+    {
       "part": "front_left_leg",
-      "confidence": 0.7252971529960632
-    },
-    {
-      "part": "front_right_leg",
-      "confidence": 0.6871256828308105
-    },
-    {
-      "part": "back_left_leg",
-      "confidence": 0.6596667766571045
-    },
-    {
-      "part": "back_right_leg",
-      "confidence": 0.6251505017280579
+      "confidence": 0.6809400320053101
     },
     {
       "part": "armrest_right",
-      "confidence": 0.6874357461929321
+      "confidence": 0.7152259945869446
     }
   ],
   "detected_pairs": [
     {
-      "part": "front_left_leg",
-      "damage_type": "broken",
-      "damage_confidence": 0.7310583591461182,
-      "part_confidence": 0.7252971529960632
+      "part": "armrest_right",
+      "damage_type": "missing",
+      "damage_confidence": 0.7308327555656433,
+      "part_confidence": 0.7152259945869446
     }
   ]
 }

@@ -3,17 +3,17 @@
     {
       "id": 0,
       "type": "repair_action",
-      "action": "repair_broken",
-      "target_part": "front_left_leg",
-      "confidence": 0.7310583591461182
+      "action": "repair_missing",
+      "target_part": "armrest_right",
+      "confidence": 0.7308327555656433
     }
   ],
   "edges": [],
   "repair_sequence": [
     {
       "step_id": 0,
-      "action": "repair_broken",
-      "target_part": "front_left_leg",
+      "action": "repair_missing",
+      "target_part": "armrest_right",
       "estimated_time": "10-20 minutes",
       "difficulty": "medium"
     }

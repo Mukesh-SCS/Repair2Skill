@@ -5,29 +5,28 @@
       "wood glue",
       "clamps",
       "saw",
-      "sandpaper",
-      "measuring tape"
+      "sandpaper"
     ],
     "materials_needed": [
       "wood for armrest",
       "wood screws",
-      "finish (stain or paint)"
+      "finish or paint"
     ],
     "safety_precautions": [
       "wear safety goggles",
-      "use gloves when handling wood and glue",
+      "use gloves when handling wood",
       "ensure workspace is clear of hazards"
     ],
     "steps": [
       {
         "step_number": 1,
         "description": "Measure the dimensions of the left armrest to create a matching right armrest.",
-        "estimated_time": "10 minutes"
+        "estimated_time": "15 minutes"
       },
       {
         "step_number": 2,
-        "description": "Cut the wood to the measured dimensions for the new armrest.",
-        "estimated_time": "15 minutes"
+        "description": "Cut the wood to the required dimensions for the new armrest.",
+        "estimated_time": "20 minutes"
       },
       {
         "step_number": 3,
@@ -36,8 +35,8 @@
       },
       {
         "step_number": 4,
-        "description": "Attach the new armrest to the chair using wood glue and screws.",
-        "estimated_time": "20 minutes"
+        "description": "Attach the new armrest to the chair frame using wood glue and screws.",
+        "estimated_time": "15 minutes"
       },
       {
         "step_number": 5,
@@ -46,13 +45,14 @@
       },
       {
         "step_number": 6,
-        "description": "Finish the armrest with stain or paint to match the rest of the chair.",
-        "estimated_time": "15 minutes"
+        "description": "Finish or paint the armrest to match the rest of the chair.",
+        "estimated_time": "30 minutes"
       }
     ],
     "tips": [
-      "Ensure the new armrest is securely attached before removing clamps.",
-      "Choose a finish that matches the existing furniture for a seamless look."
+      "Ensure all measurements are accurate before cutting.",
+      "Allow adequate drying time for glue.",
+      "Test the stability of the armrest after installation."
     ],
     "difficulty_level": "medium"
   }

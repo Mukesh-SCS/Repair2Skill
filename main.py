@@ -95,7 +95,8 @@ def main():
     for dp in pairs:
         part = dp["part"]; idx = PARTS.index(part) if part in PARTS else -1
         render_step_visual(None, idx, f"data/visual_guides/{part}_repair_guide.png",
-                           "outputs/stage1_parts.json")
+                   "outputs/stage1_parts.json", flip_horizontal=True, flip_vertical=True)
+
 
     # Stage-II graph from pairs
     graph = parse_manual(None, "outputs/stage1_parts.json")
