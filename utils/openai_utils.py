@@ -1,78 +1,117 @@
-# ==================== utils/openai_utils.py ====================
-import openai
+"""
+================================================================================
+DESCRIPTION:
+    OpenAI-backed repair-plan generator. Returns STRICT JSON.
+    Falls back to a local deterministic plan when no API key is set
+    or on repeated API errors.
+
+USAGE:
+    from utils.openai_utils import generate_repair_plan
+    plan = generate_repair_plan("Chair", "back", "Fix backrest", "loose")
+
+OUTPUTS:
+    Dict containing key "repair_plan" with tools/materials/safety/steps/tips.
+
+ARGUMENTS:
+    furniture_type: str
+    damaged_part: str
+    assembly_step: str
+    damage_type: str = "missing"
+    Environment:
+      OPENAI_API_KEY   required to call OpenAI
+      OPENAI_MODEL     optional (default: gpt-4o-mini)
+Author Info: Mukesh Mani Tripathi
+================================================================================
+"""
+
 import os
-from dotenv import load_dotenv
 import json
+import time
+import openai
+from dotenv import load_dotenv
 
 load_dotenv()
 
-def generate_repair_plan(furniture_type, damaged_part, assembly_step, damage_type="missing"):
-    """Generate repair plan using OpenAI GPT-4"""
-    
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    if not client:
-        raise ValueError("OpenAI client initialization failed. Check your API key.")
-    
-    prompt = f"""
-    You are an expert furniture repair technician. Given the following information about a damaged {furniture_type}:
-    
-    - Furniture Type: {furniture_type}
-    - Damaged Part: {damaged_part}
-    - Damage Type: {damage_type}
-    - Original Assembly Step: {assembly_step}
-    
-    Please provide a detailed step-by-step repair plan. Include:
-    1. Required tools and materials
-    2. Safety precautions
-    3. Step-by-step instructions
-    4. Tips for best results
-    
-    Format your response as a structured JSON with the following format:
-    {{
-        "repair_plan": {{
-            "tools_needed": ["tool1", "tool2", ...],
-            "materials_needed": ["material1", "material2", ...],
-            "safety_precautions": ["precaution1", "precaution2", ...],
+
+def _fallback(damaged_part: str):
+    return {
+        "repair_plan": {
+            "tools_needed": ["screwdriver", "PVA wood glue", "clamp"],
+            "materials_needed": ["replacement screws"],
+            "safety_precautions": ["wear eye protection", "unplug power tools"],
             "steps": [
-                {{
-                    "step_number": 1,
-                    "description": "Step description",
-                    "estimated_time": "time estimate"
-                }},
-                ...
+                {"step_number": 1, "description": f"Inspect and clean the {damaged_part}.", "estimated_time": "3m"},
+                {"step_number": 2, "description": f"Tighten or replace fasteners on the {damaged_part}.", "estimated_time": "7m"},
+                {"step_number": 3, "description": f"Reinforce and align the {damaged_part}.", "estimated_time": "5m"},
+                {"step_number": 4, "description": "Verify stability.", "estimated_time": "2m"}
             ],
-            "tips": ["tip1", "tip2", ...],
-            "difficulty_level": "easy|medium|hard"
-        }}
-    }}
-    """
-    
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a helpful furniture repair expert."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=1500
-        )
-        
-        # Parse the response
-        repair_plan = json.loads(response.choices[0].message.content)
-        return repair_plan
-        
-    except Exception as e:
-        print(f"Error generating repair plan: {e}")
-        return {
-            "error": "Failed to generate repair plan",
-            "fallback_plan": {
-                "tools_needed": ["screwdriver", "glue", "sandpaper"],
-                "materials_needed": ["replacement part", "screws"],
-                "steps": [
-                    {"step_number": 1, "description": f"Remove damaged {damaged_part}", "estimated_time": "10 minutes"},
-                    {"step_number": 2, "description": f"Clean the area", "estimated_time": "5 minutes"},
-                    {"step_number": 3, "description": f"Install new {damaged_part}", "estimated_time": "15 minutes"}
-                ]
-            }
+            "tips": ["test wobble after each step"],
+            "difficulty_level": "easy"
         }
+    }
+
+
+def generate_repair_plan(
+    furniture_type: str,
+    damaged_part: str,
+    assembly_step: str,
+    damage_type: str = "missing",
+    model: str | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1400,
+):
+    """
+    Uses the OpenAI Chat Completions API to produce a strict-JSON repair plan.
+    If OPENAI_API_KEY is missing or the API fails three times, returns a fallback.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return _fallback(damaged_part)
+
+    client = openai.OpenAI(api_key=api_key)
+    model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    prompt = f"""
+You are an expert furniture repair technician.
+
+Input:
+- furniture_type: {furniture_type}
+- damaged_part: {damaged_part}
+- damage_type: {damage_type}
+- assembly_step: {assembly_step}
+
+Return ONLY JSON with this schema:
+{{
+  "repair_plan": {{
+    "tools_needed": ["..."],
+    "materials_needed": ["..."],
+    "safety_precautions": ["..."],
+    "steps": [{{"step_number": 1, "description": "...", "estimated_time": "..."}}],
+    "tips": ["..."],
+    "difficulty_level": "easy|medium|hard"
+  }}
+}}
+"""
+
+    for attempt in range(3):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You produce safe, practical repair plans. Return ONLY JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"},
+            )
+            obj = json.loads(resp.choices[0].message.content)
+            if "repair_plan" in obj and isinstance(obj["repair_plan"].get("steps", []), list):
+                return obj
+            raise ValueError("Invalid schema from model")
+        except Exception as e:
+            if attempt == 2:
+                out = _fallback(damaged_part)
+                out["warning"] = f"fallback_used: {e}"
+                return out
+            time.sleep(1.5 * (attempt + 1))

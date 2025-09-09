@@ -1,7 +1,54 @@
-# ==================== main.py ====================
+"""
+================================================================================
+DESCRIPTION:
+    Main pipeline for the Repair2Skill project.
+    - Loads or captures a chair image.
+    - Runs the trained detector to identify damaged parts.
+    - Uses the OpenAI API (if key present) to generate structured repair plans.
+    - Renders visual guidance images for each targeted part.
+    - Builds a deterministic assembly graph from detections.
+    - Optional: trains baseline classifier (--train) or Faster R-CNN (--train-frcnn).
+
+USAGE:
+    # data + training
+    python main.py --generate-data --samples 2000
+    python main.py --train
+    python main.py --train-frcnn --frcnn-ann ./data/synthetic_damage/annotations.json \
+                   --frcnn-imgs ./data/synthetic_damage/images --frcnn-epochs 10 --frcnn-batch 2
+
+    # inference
+    python main.py --upload ./data/user_images/chair.jpg
+    python main.py --camera
+    # Optional: export OPENAI_API_KEY, OPENAI_MODEL=gpt-4o-mini
+
+OUTPUTS:
+    ./outputs/stage1_parts.json
+    ./outputs/repair_plan_<part>_<damage>.json
+    ./data/visual_guides/*.png
+    ./outputs/stage2_assembly_graph.json
+
+ARGUMENTS:
+    --camera                    Capture image from camera
+    --upload PATH               Path to an image
+    --generate-data             Generate synthetic dataset
+    --samples INT               Samples for synthetic generation (default 1000)
+    --train                     Train baseline MobileNet classifier
+    --train-frcnn               Train Faster R-CNN detector (runs separate script)
+    --frcnn-ann PATH            Annotations JSON for FRCNN
+    --frcnn-imgs PATH           Images folder for FRCNN
+    --frcnn-epochs INT          FRCNN epochs (default 10)
+    --frcnn-batch INT           FRCNN batch size (default 2)
+Author Info: Mukesh Mani Tripathi
+================================================================================
+"""
+
 import argparse
 import os
 import json
+import subprocess
+import sys
+from pathlib import Path
+
 from scripts.capture_image import capture_from_camera
 from scripts.detect_damage import detect_damage_and_parts
 from scripts.render_visual_guidance import render_step_visual
@@ -11,116 +58,132 @@ from utils.openai_utils import generate_repair_plan
 from utils.assembly_plan_utils import parse_manual
 
 
+
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Furniture Repair Model')
-    parser.add_argument('--camera', action='store_true', help='Capture image using Pi Camera')
-    parser.add_argument('--upload', type=str, help='Path to the user-uploaded image')
-    parser.add_argument('--generate-data', action='store_true', help='Generate synthetic training data')
-    parser.add_argument('--train', action='store_true', help='Train the damage detection model')
-    parser.add_argument('--samples', type=int, default=1000, help='Number of synthetic samples to generate')
+    ap = argparse.ArgumentParser(description="Repair2Skill: detect, plan, visualize")
+    # data + training
+    ap.add_argument("--generate-data", action="store_true", help="Generate synthetic dataset")
+    ap.add_argument("--samples", type=int, default=1000, help="Synthetic samples to generate")
+    ap.add_argument("--train", action="store_true", help="Train baseline MobileNet classifier")
+    ap.add_argument("--train-frcnn", action="store_true", help="Train Faster R-CNN detector via script")
+    ap.add_argument("--frcnn-ann", type=str, default="./data/synthetic_damage/annotations.json")
+    ap.add_argument("--frcnn-imgs", type=str, default="./data/synthetic_damage/images")
+    ap.add_argument("--frcnn-epochs", type=int, default=10)
+    ap.add_argument("--frcnn-batch", type=int, default=2)
 
-    args = parser.parse_args()
+    # inference
+    ap.add_argument("--camera", action="store_true", help="Capture image via camera")
+    ap.add_argument("--upload", type=str, help="Path to an image file")
+    args = ap.parse_args()
 
-    # Generate synthetic data if requested
+    # Generate synthetic data
     if args.generate_data:
-        print("Generating synthetic training data...")
-        generator = SyntheticDataGenerator()
-        generator.generate_dataset(num_samples=args.samples)
-        print("Synthetic data generation complete!")
+        print("Generating synthetic dataset...")
+        SyntheticDataGenerator().generate_dataset(num_samples=args.samples)
+        print("Done.")
         return
 
-    # Train model if requested
+    # Train baseline classifier
     if args.train:
-        print("Training damage detection model...")
+        print("Training damage/part classifier baseline...")
         train_model()
-        print("Model training complete!")
+        print("Training complete.")
         return
 
-    # Image capture/upload logic
+    # Train Faster R-CNN detector
+    if args.train_frcnn:
+        run_frcnn_training(args.frcnn_ann, args.frcnn_imgs, args.frcnn_epochs, args.frcnn_batch)
+        return
+
+    # Inference path requires one image source
+    if args.camera and args.upload:
+        raise ValueError("Use either --camera or --upload, not both.")
     if args.camera:
         image_path = capture_from_camera()
-        print(f"Image captured: {image_path}")
     elif args.upload:
         image_path = args.upload
-        print(f"Using uploaded image: {image_path}")
     else:
-        raise ValueError("Please provide --camera or --upload argument.")
+        raise ValueError("Provide --camera or --upload.")
+    print(f"Image: {image_path}")
 
-    # Check if model exists
+    # Check classifier model
     model_path = "./models/damage_detection/part_detector.pth"
     if not os.path.exists(model_path):
-        print("Model not found! Please train the model first using --train flag")
-        print("Or generate synthetic data first using --generate-data flag")
+        print("Model not found. Train first with --train (or generate data then train).")
         return
 
-    # Detect damage from the image (Stage I output)
+    # Stage I: detection
+    Path("outputs").mkdir(parents=True, exist_ok=True)
     print("Detecting damage and parts...")
-    damage_report = detect_damage_and_parts(image_path, model_path=model_path)
-    print("Stage I Output (Detected Parts JSON):")
-    print(json.dumps(damage_report, indent=2))
+    stage1 = detect_damage_and_parts(image_path, model_path=model_path)
+    print(json.dumps(stage1, indent=2))
+    with open("outputs/stage1_parts.json", "w") as f:
+        json.dump(stage1, f, indent=2)
 
-    # Save Stage I output
-    os.makedirs("./outputs", exist_ok=True)
-    with open("./outputs/stage1_parts.json", "w") as f:
-        json.dump(damage_report, f, indent=2)
+    # Build simple pairs if missing
+    pairs = stage1.get("detected_pairs", [])
+    if not pairs and stage1.get("detected_damages") and stage1.get("detected_parts"):
+        dmg = stage1["detected_damages"][0]["type"]
+        pairs = [{
+            "part": p["part"],
+            "damage_type": dmg,
+            "damage_confidence": 0.5,
+            "part_confidence": p["confidence"]
+        } for p in stage1["detected_parts"]]
 
-    # Generate repair plan for each detected damage
-    if "detected_damages" in damage_report and damage_report["detected_damages"]:
+    # OpenAI repair plans (uses OPENAI_API_KEY if set; otherwise returns local fallback)
+    if pairs:
         print("\nGenerating repair plans...")
-
-        for i, damage in enumerate(damage_report["detected_damages"]):
-            furniture_type = "Chair"
-            damaged_part = "Unknown"
-
-            if "detected_parts" in damage_report and damage_report["detected_parts"]:
-                if i < len(damage_report["detected_parts"]):
-                    damaged_part = damage_report["detected_parts"][i]["part"]
-
-            damage_type = damage["type"]
-            assembly_step = f"Repair the {damaged_part} that is {damage_type}"
-
-            print(f"\nGenerating repair plan for {damaged_part} ({damage_type})...")
-            plan = generate_repair_plan(furniture_type, damaged_part, assembly_step, damage_type)
-
-            plan_filename = f"./outputs/repair_plan_{damaged_part}_{damage_type}.json"
-            with open(plan_filename, "w") as f:
+        for dp in pairs:
+            part = dp["part"]; dmg = dp["damage_type"]
+            assembly_step = f"Repair the {part} that is {dmg}"
+            plan = generate_repair_plan("Chair", part, assembly_step, dmg)
+            out = f"outputs/repair_plan_{part}_{dmg}.json"
+            with open(out, "w") as f:
                 json.dump(plan, f, indent=2)
-
-            print(f"Repair plan saved to: {plan_filename}")
+            print(f"Saved {out}")
     else:
-        print("No damage detected in the image.")
+        print("No pairs found. Skipping plan generation.")
 
-    os.makedirs("./data/visual_guides", exist_ok=True)
+    # Visual guidance images
+    Path("data/visual_guides").mkdir(parents=True, exist_ok=True)
+    targeted_parts = [p["part"] for p in pairs] if pairs else [p["part"] for p in stage1.get("detected_parts", [])]
+    PARTS = ["seat","back","front_left_leg","front_right_leg","back_left_leg","back_right_leg","armrest_left","armrest_right"]
+    for part in targeted_parts:
+        try:
+            idx = PARTS.index(part)
+        except ValueError:
+            idx = -1
+        render_step_visual(
+            model_path=None,
+            highlighted_part_idx=idx,
+            save_path=f"data/visual_guides/{part}_repair_guide.png",
+            damage_report_path="outputs/stage1_parts.json"
+        )
 
-    # Render visual guide for detected parts
-    if "detected_parts" in damage_report and damage_report["detected_parts"]:
-        for i, part in enumerate(damage_report["detected_parts"]):
-            part_name = part["part"]
-            confidence = part["confidence"]
-
-            print(f"Rendering visual guide for {part_name} (confidence: {confidence:.2f})...")
-            render_step_visual(
-                "./data/partnet_data/chair/model.obj",
-                highlighted_part_idx=i,
-                save_path=f"./data/visual_guides/{part_name}_repair_guide.png",
-                damage_report_path="./outputs/stage1_parts.json"
-            )
-
+    # Stage II: simple rule-based assembly graph
     print("\nGenerating assembly graph...")
-    assembly_graph = parse_manual("./data/furniture_manuals/sample_manual.png", "./outputs/stage1_parts.json")
-    print("Stage II Output (Assembly Graph):")
-    print(json.dumps(assembly_graph, indent=2))
+    graph = parse_manual(None, "outputs/stage1_parts.json")
+    with open("outputs/stage2_assembly_graph.json", "w") as f:
+        json.dump(graph, f, indent=2)
+    print("Saved outputs/stage2_assembly_graph.json")
 
-    with open("./outputs/stage2_assembly_graph.json", "w") as f:
-        json.dump(assembly_graph, f, indent=2)
+    print("\nDone. See ./outputs and ./data/visual_guides")
 
-    print("\nRepair analysis complete!")
-    print("Check the ./outputs/ directory for results:")
-    print("- stage1_parts.json: Detected parts and damages")
-    print("- stage2_assembly_graph.json: Repair sequence graph")
-    print("- repair_plan_*.json: Individual repair plans")
-    print("- ./data/visual_guides/: Visual repair guides")
 
+def run_frcnn_training(ann: str, imgs: str, epochs: int, batch: int):
+    """Calls scripts/train_detector_frcnn.py in a subprocess with provided args."""
+    cmd = [
+        sys.executable, "scripts/train_detector_frcnn.py",
+        "--ann", ann,
+        "--imgs", imgs,
+        "--epochs", str(epochs),
+        "--batch", str(batch),
+    ]
+    print("Launching Faster R-CNN training:", " ".join(cmd))
+    subprocess.run(cmd, check=True)
 
 if __name__ == "__main__":
     main()
