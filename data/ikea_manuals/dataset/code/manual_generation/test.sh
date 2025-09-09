@@ -1,1 +1,0 @@
-PYTHONPATH=. python manual_generation/test.py --data_json ../main_data.json --parts_dir ../parts --part_features_pkl resources/features_dgcnn_1024_102.pkl
