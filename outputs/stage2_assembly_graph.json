@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    {
+      "id": 0,
+      "type": "repair_action",
+      "action": "repair_broken",
+      "target_part": "front_left_leg",
+      "confidence": 0.7310583591461182
+    }
+  ],
+  "edges": [],
+  "repair_sequence": [
+    {
+      "step_id": 0,
+      "action": "repair_broken",
+      "target_part": "front_left_leg",
+      "estimated_time": "10-20 minutes",
+      "difficulty": "medium"
+    }
+  ]
+}

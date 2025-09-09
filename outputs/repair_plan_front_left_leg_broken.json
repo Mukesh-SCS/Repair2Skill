@@ -1,0 +1,58 @@
+{
+  "repair_plan": {
+    "tools_needed": [
+      "screwdriver",
+      "wood glue",
+      "clamps",
+      "sandpaper",
+      "wood filler"
+    ],
+    "materials_needed": [
+      "replacement wood (if necessary)",
+      "wood finish or paint (optional)"
+    ],
+    "safety_precautions": [
+      "wear safety goggles",
+      "work in a well-ventilated area",
+      "use gloves when handling wood glue"
+    ],
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Assess the damage to the front left leg and determine if it can be repaired or needs replacement.",
+        "estimated_time": "10 minutes"
+      },
+      {
+        "step_number": 2,
+        "description": "If the leg can be repaired, clean the broken edges and apply wood glue to both surfaces.",
+        "estimated_time": "5 minutes"
+      },
+      {
+        "step_number": 3,
+        "description": "Align the broken pieces and use clamps to hold them together while the glue dries.",
+        "estimated_time": "30 minutes (drying time may vary)"
+      },
+      {
+        "step_number": 4,
+        "description": "Once the glue is dry, sand the repaired area to smooth out any rough edges.",
+        "estimated_time": "10 minutes"
+      },
+      {
+        "step_number": 5,
+        "description": "If necessary, apply wood filler to any gaps and sand again once dry.",
+        "estimated_time": "15 minutes"
+      },
+      {
+        "step_number": 6,
+        "description": "Finish the leg with wood finish or paint if desired.",
+        "estimated_time": "20 minutes (drying time may vary)"
+      }
+    ],
+    "tips": [
+      "Ensure the glue is suitable for wood repair.",
+      "Use clamps that provide even pressure.",
+      "Test the stability of the leg before using the chair."
+    ],
+    "difficulty_level": "medium"
+  }
+}

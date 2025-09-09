@@ -1,0 +1,59 @@
+{
+  "repair_plan": {
+    "tools_needed": [
+      "screwdriver",
+      "wood glue",
+      "clamps",
+      "saw",
+      "sandpaper",
+      "measuring tape"
+    ],
+    "materials_needed": [
+      "wood for armrest",
+      "wood screws",
+      "finish (stain or paint)"
+    ],
+    "safety_precautions": [
+      "wear safety goggles",
+      "use gloves when handling wood and glue",
+      "ensure workspace is clear of hazards"
+    ],
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Measure the dimensions of the left armrest to create a matching right armrest.",
+        "estimated_time": "10 minutes"
+      },
+      {
+        "step_number": 2,
+        "description": "Cut the wood to the measured dimensions for the new armrest.",
+        "estimated_time": "15 minutes"
+      },
+      {
+        "step_number": 3,
+        "description": "Sand the edges of the cut wood to ensure a smooth finish.",
+        "estimated_time": "10 minutes"
+      },
+      {
+        "step_number": 4,
+        "description": "Attach the new armrest to the chair using wood glue and screws.",
+        "estimated_time": "20 minutes"
+      },
+      {
+        "step_number": 5,
+        "description": "Clamp the armrest in place and allow the glue to dry according to the manufacturer's instructions.",
+        "estimated_time": "30 minutes"
+      },
+      {
+        "step_number": 6,
+        "description": "Finish the armrest with stain or paint to match the rest of the chair.",
+        "estimated_time": "15 minutes"
+      }
+    ],
+    "tips": [
+      "Ensure the new armrest is securely attached before removing clamps.",
+      "Choose a finish that matches the existing furniture for a seamless look."
+    ],
+    "difficulty_level": "medium"
+  }
+}
