@@ -1,155 +1,178 @@
-# 🛠️ Repair2Skill on Raspberry Pi 5 using OPENAI API
+# 🛠️ Repair2Skill — AI-Powered Robotic Furniture Repair
 
-**Repair2Skill** is an AI-powered framework that enables robots (or intelligent agents) to detect and plan repairs for broken furniture parts. Inspired by [Manual2Skill (RSS 2025)](https://github.com/owensun2004/Manual2Skill), this project extends the original idea to handle **furniture repair** by using a camera, part detection, and **vision-language models (VLMs)** like GPT-4o.
-
+**Repair2Skill** is an AI-driven system that detects damaged furniture parts, generates structured repair plans, and simulates robotic repair execution in **PyBullet**.  
+Inspired by [Manual2Skill (RSS 2025)](https://github.com/owensun2004/Manual2Skill), this framework extends the original concept from *assembly* to *repair*, combining **Faster R-CNN** detection, **GPT-4o** reasoning, and robotic simulation.
 
 ---
 
-## 🧠 What It Does
+## 🧠 Core Capabilities
 
-- Captures an image of a **broken chair**  uploaded image.
-- Uses a trained **Faster R-CNN**  detect damaged parts.
-- Sends detection results to **GPT-4o** via OpenAI API to generate a **step-by-step repair plan**.
-- Generates a **visual repair graph** for robotic or manual execution.
-- send repair paln to action to the robotic arm 
+- Detects **damaged parts** in real furniture using Faster R-CNN.  
+- Generates **step-by-step repair plans** via GPT-4o.  
+- Builds a **repair dependency graph** (Manual2Skill-style hierarchy).  
+- Renders **visual repair guides** highlighting damaged and dependent parts.  
+- Simulates the repair process using a robotic arm in **PyBullet**.
 
+---
+
+## ⚙️ System Pipeline
+```bash
+Capture / Upload → FRCNN Detection → GPT-4o Repair Plan
+                        ↓
+Repair Graph Generation → Visual Guide → PyBullet Simulation
+
+---------------------------------------------------------------------------------------
+| Stage  | Module                      | Output                                       |
+|--------|-----------------------------|----------------------------------------------|
+| 1      | `detect_damage.py`          | `stage1_parts.json`                          |
+| 2      | `openai_utils.py`           | `repair_plan_<part>_<damage>.json`           |
+| 3      | `repair_graph.py`           | `repair_graph_<part>.json` + `.png`          |
+| 4      | `render_visual_guidance.py` | `data/visual_guides/<part>_repair_guide.png` |
+| 5      | `robot_executor.py`         |  Simulated robotic repair execution          |
+---------------------------------------------------------------------------------------
+```
 ---
 
 ## 📁 Project Structure
 ```bash
-FurnitureRepairModel/
+Repair2Skill/
 ├── data/
-│   ├── synthetic_damage/
-│   └── user_images/
+│ ├── synthetic_damage/
+│ └── user_images/
 │
 ├── models/
-│   ├── damage_detection/
+│ └── damage_detection/
+│
+├── outputs/
+│ ├── stage1_parts.json
+│ ├── repair_plan_<part><damage>.json
+│ ├── repair_graph<part>.json
+│ └── repair_graph_<part>.png
 │
 ├── scripts/
-│   ├── generate_synthetic_data.py
-│   ├── train_detector_frcnn.py
-│   ├── detect_damage.py
-│   ├── generate_repair_plan.py
-│    ── render_visual_guidance.py
-  
-│   
+│ ├── capture_image.py
+│ ├── detect_damage.py
+│ ├── train_detector_frcnn.py
+│ ├── generate_synthetic_data.py
+│ ├── generate_repair_plan.py
+│ ├── render_visual_guidance.py
+│ ├── repair_graph.py
+│ └── robot_executor.py
 │
 ├── utils/
-│   └── openai_utils.py
+│ └── openai_utils.py
 │
-├── configs/
-│   └── model_config.yaml
-│
-├── Outputs/
-|   |- frcnn_model.pth
-│   └── training_curve.png
-│
-├── requirements.txt
-├── .env
-├── .gitignore
 ├── main.py
+├── requirements.txt
 └── README.md
-
 ```
-
 ---
 
-## ⚙️ How It Works
+## 🔧 Installation & Setup
 
-### 1. Generate Synthetic Data
+1. Clone and set up the environment:
 ```bash
-python scripts/generate_synthetic_data.py --samples 500
+   git clone <your_repo_url>
+   cd FurnitureRepairModel
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+
 ```
-
-This saves images and `annotations.json` to `./data/synthetic_damage/`.
-
-### 2. Train the Model
-```bash 
-    # training
-    python main.py --train-frcnn        → Faster R-CNN detector  (`train_detector_frcnn.py`)
-```
-
-After training, your model will be saved to:
-```
-./models/damage_detection/part_detector.pth
-```
-
----
-
-## ✅ Step 3: Set OpenAI API Key
-
-Create a `.env` file in your project root with:
-```env
+## Create a .env file in the root directory:
+```bash
 OPENAI_API_KEY=sk-...
 ```
+--- 
 
----
+## Usage
 
-## ✅ Step 4: Run the Pipeline
+Step 1: Generate Synthetic Training Data
+python main.py --generate-data --samples 500
 
-# 1. Place your test image
-Example:
-```
-./data/user_images/my_broken_chair.jpg
-```
 
-# 2. Run:
-- You can run the pipeline either with a captured image from the Raspberry Pi camera or an uploaded image.
+Generates images/ and annotations.json under ./data/synthetic_damage/.
 
-## 🔴 Option 1: Camera
-```bash
+Step 2: Train the Faster R-CNN Model
+python main.py --train-frcnn
+
+
+Model saved to:
+
+./models/damage_detection/frcnn_model.pth
+
+Step 3: Run the Full Pipeline
+
+You can use either a captured image (camera) or upload one.
+
+Option 1 – Camera
 python main.py --camera
-```
 
-## 🔵 Option 2: Upload an Image
-```bash
+Option 2 – Upload Image
 python main.py --upload ./data/user_images/my_broken_chair.jpg
-```
----
-
-## 🔍 What Happens Internally
-
-1. Loads your image
-2. Uses the trained model (`part_detector.pth`) to detect parts
-3. Sends it to OpenAI GPT-4o via `analyze_image`
-4. Outputs JSON file `./outputs/stage1_parts.json`
 
 
-### The pipeline will:
-- Detect broken parts using trained model (`Faster R-CNN` or `MobileNet`)
-- Generate repair steps using `OpenAI GPT-4o`
-- Output a repair graph for planning or robotics
-- Render visual repair guides per part
+This will:
 
----
-### 📊 Training Curve
-Here's the training progress (losses over 20 epochs): `./Repair2Skill/outputs/training_curves.png`
+Detect damaged parts
+
+Generate GPT-4o repair plan
+
+Create a hierarchical repair graph
+
+Render a visual repair guide
+
+Step 4: Simulate the Repair in PyBullet
+
+After running the pipeline:
+
+python scripts/robot_executor.py
 
 
-## 🧪 Other Tools & Utilities
+The simulation will:
 
-- `train_detector_frcnn.py`: Train object detector using Faster R-CNN.
-- `evaluate_model.py`: Evaluate model performance on test data.
-- `generate_synthetic_data.py`: Generate labeled synthetic furniture damage dataset.
-- `repair_executor.py`: Executes or simulates repair actions based on plan.
-- `model_optimization.py`: Prepares models for low-power devices (e.g., quantization).
+Load the robotic arm (KUKA iiwa)
 
----
+Parse your repair_plan_*.json and repair_graph_*.json
 
-## 🛠️ Setup Instructions
+Execute each repair step in dependency order
 
-1. Clone and set up the environment
-```bash
-git clone <this_repo>
-cd FurnitureRepairModel
-python3 -m venv .venv
-.venv\Scripts\activate`
-pip install -r requirements.txt
-```
----
+📊 Example Output Files
+outputs/
+ ├── stage1_parts.json
+ ├── repair_plan_back_leg_broken.json
+ ├── repair_graph_back_leg.json
+ ├── repair_graph_back_leg.png
+data/visual_guides/
+ ├── back_leg_repair_guide.png
 
-## 📚 References
-- Manual2Skill (RSS 2025): https://github.com/owensun2004/Manual2Skill
-- PartNet Dataset (CVPR 2019): https://github.com/daerduoCarey/partnet_dataset
-- IKEA-Manual Dataset (NeurIPS 2022): https://cs.stanford.edu/~kaichun/ikea.html
-- Furniture-Assembly-Web Demo: https://owensun2004.github.io/Furniture-Assembly-Web/
+🧠 Key Concepts
+
+Repair Graph: Built using chair_graph.py and repair_graph.py.
+It ensures repairs follow mechanical dependencies (e.g., remove leg → fix → reattach).
+
+Faster R-CNN: Used for part + damage detection (higher accuracy than MobileNet).
+
+GPT-4o: Generates structured repair steps, tools, and safety guidance.
+
+PyBullet: Executes the full plan using a simulated robotic arm.
+
+
+
+References
+
+Manual2Skill (RSS 2025)
+
+PartNet Dataset (CVPR 2019)
+
+IKEA-Manual Dataset (NeurIPS 2022)
+
+PyBullet Simulator
+
+🧱 Next Steps
+
+Integrate pose estimation from visual + point cloud data.
+
+Extend PyBullet actions with grasping and force feedback.
+
+Add dynamic 3D chair URDF models for realistic repair interaction.

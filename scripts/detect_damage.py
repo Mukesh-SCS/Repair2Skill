@@ -1,87 +1,88 @@
 """
 ================================================================================
-DESCRIPTION:
-    Predict damage types and chair parts with a MobileNetV3 classifier.
-    Returns Stage-I JSON with filtered top part↔damage pairs for planning.
+Detect Damage and Part Type using Faster R-CNN
+================================================================================
+Outputs:
+  {
+    "detected_damages": [...],
+    "detected_parts": [...],
+    "detected_pairs": [...]
+  }
 
-USAGE:
-    from scripts.detect_damage import detect_damage_and_parts
-    report = detect_damage_and_parts("chair.jpg", "./models/damage_detection/part_detector.pth")
-
-OUTPUTS:
-    {
-      "detected_damages": [{"type": "...", "confidence": float}],
-      "detected_parts":   [{"part": "...", "confidence": float}],
-      "detected_pairs":   [{"part": "...", "damage_type": "...",
-                            "damage_confidence": float, "part_confidence": float}]
-    }
-
-ARGUMENTS:
-    image_path: str
-    model_path: str
-Author Info: Mukesh Mani Tripathi
+Usage:
+  from scripts.detect_damage import detect_damage_and_parts
+  detect_damage_and_parts("chair.jpg", "./models/damage_detection/frcnn_model.pth")
 ================================================================================
 """
+
 import os
 import torch
-import torchvision.transforms as transforms
+from torchvision import transforms
 from PIL import Image
-from scripts.train_part_detector import FurnitureRepairModel
 
 PART_CLASSES = [
-    "seat","back","front_left_leg","front_right_leg",
-    "back_left_leg","back_right_leg","armrest_left","armrest_right"
+    "seat", "back", "front_left_leg", "front_right_leg",
+    "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"
 ]
-DAMAGE_CLASSES = ["missing","cracked","broken","loose","scratched"]
+DAMAGE_CLASSES = ["missing", "cracked", "broken", "loose", "scratched"]
 
-def _load_model(model_path: str):
-    model = FurnitureRepairModel()
-    state = torch.load(model_path, map_location=torch.device("cpu"))
-    model.load_state_dict(state)
-    model.eval()
-    return model
 
-def detect_damage_and_parts(image_path: str, model_path: str,
-                            thresh_damage: float = 0.60,
-                            thresh_part: float = 0.60,
-                            top_k_parts: int = 1):
+def detect_damage_and_parts(image_path: str, model_path: str, threshold: float = 0.6):
     if not os.path.exists(model_path):
         return {"error": f"Model not found: {model_path}"}
 
-    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor()])
-    img = Image.open(image_path).convert("RGB")
-    x = tf(img).unsqueeze(0)
+    # Load model
+    from torchvision.models.detection import fasterrcnn_resnet50_fpn
+    from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
-    model = _load_model(model_path)
+    num_classes = 1 + len(PART_CLASSES) + len(DAMAGE_CLASSES)
+    model = fasterrcnn_resnet50_fpn(weights=None)
+    in_feats = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_feats, num_classes)
+
+    model.load_state_dict(torch.load(model_path, map_location="cpu"))
+    model.eval()
+
+    # Prepare image
+    tf = transforms.Compose([transforms.Resize((512, 512)), transforms.ToTensor()])
+    image = Image.open(image_path).convert("RGB")
+    x = tf(image).unsqueeze(0)
+
+    # Predict
     with torch.no_grad():
-        damage_logits, part_logits = model(x)
-        damage_probs = torch.sigmoid(damage_logits).squeeze().tolist()
-        part_probs   = torch.sigmoid(part_logits).squeeze().tolist()
+        predictions = model(x)[0]
 
-    detected_damages = [
-        {"type": DAMAGE_CLASSES[i], "confidence": float(damage_probs[i])}
-        for i in range(len(DAMAGE_CLASSES)) if damage_probs[i] >= thresh_damage
-    ]
-    detected_parts = [
-        {"part": PART_CLASSES[i], "confidence": float(part_probs[i])}
-        for i in range(len(PART_CLASSES)) if part_probs[i] >= thresh_part
-    ]
+    boxes = predictions["boxes"]
+    labels = predictions["labels"]
+    scores = predictions["scores"]
 
-    # Pair the single best damage with top-K parts (keeps output tight and correct)
-    pairs = []
-    if detected_damages and detected_parts:
-        best_damage = max(detected_damages, key=lambda d: d["confidence"])
-        top_parts = sorted(detected_parts, key=lambda p: p["confidence"], reverse=True)[:top_k_parts]
-        for p in top_parts:
-            pairs.append({
-                "part": p["part"],
-                "damage_type": best_damage["type"],
-                "damage_confidence": best_damage["confidence"],
-                "part_confidence": p["confidence"],
-            })
+    detected_parts, detected_damages, pairs = [], [], []
+    for label, score in zip(labels, scores):
+        if score < threshold:
+            continue
+        label_name = (
+            PART_CLASSES[label - 1]
+            if label - 1 < len(PART_CLASSES)
+            else DAMAGE_CLASSES[label - 1 - len(PART_CLASSES)]
+        )
+        if label_name in PART_CLASSES:
+            detected_parts.append({"part": label_name, "confidence": float(score)})
+        else:
+            detected_damages.append({"type": label_name, "confidence": float(score)})
+
+    # Pair top damage with top part
+    if detected_parts and detected_damages:
+        best_damage = max(detected_damages, key=lambda x: x["confidence"])
+        best_part = max(detected_parts, key=lambda x: x["confidence"])
+        pairs.append({
+            "part": best_part["part"],
+            "damage_type": best_damage["type"],
+            "damage_confidence": best_damage["confidence"],
+            "part_confidence": best_part["confidence"],
+        })
 
     return {
         "detected_damages": detected_damages,
         "detected_parts": detected_parts,
-        "detected_pairs": pairs
+        "detected_pairs": pairs,
     }
