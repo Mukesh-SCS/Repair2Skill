@@ -1,0 +1,4 @@
+Stage 1 : FRCNN Damage + Part Detection
+Stage 2 : GPT-4o Repair Plan Generation  (openai_utils)
+Stage 3 : Visual Repair Graph (render_visual_guidance)
+Stage 4 : PyBullet Execution (robot_executor.py  → next step)

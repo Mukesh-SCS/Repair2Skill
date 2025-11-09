@@ -24,94 +24,91 @@ Author Info: Mukesh Mani Tripathi
 ================================================================================
 """
 
+# ==================== scripts/openai_utils.py ====================
 import os
 import json
-import time
-import openai
+import logging
+from openai import OpenAI
 from dotenv import load_dotenv
+from scripts.chair_graph import get_dependencies, find_parent
 
 load_dotenv()
 
-
-def _fallback(damaged_part: str):
-    return {
-        "repair_plan": {
-            "tools_needed": ["screwdriver", "PVA wood glue", "clamp"],
-            "materials_needed": ["replacement screws"],
-            "safety_precautions": ["wear eye protection", "unplug power tools"],
-            "steps": [
-                {"step_number": 1, "description": f"Inspect and clean the {damaged_part}.", "estimated_time": "3m"},
-                {"step_number": 2, "description": f"Tighten or replace fasteners on the {damaged_part}.", "estimated_time": "7m"},
-                {"step_number": 3, "description": f"Reinforce and align the {damaged_part}.", "estimated_time": "5m"},
-                {"step_number": 4, "description": "Verify stability.", "estimated_time": "2m"}
-            ],
-            "tips": ["test wobble after each step"],
-            "difficulty_level": "easy"
-        }
-    }
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    h = logging.StreamHandler()
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    h.setFormatter(fmt)
+    logger.addHandler(h)
+logger.setLevel(logging.INFO)
 
 
-def generate_repair_plan(
-    furniture_type: str,
-    damaged_part: str,
-    assembly_step: str,
-    damage_type: str = "missing",
-    model: str | None = None,
-    temperature: float = 0.2,
-    max_tokens: int = 1400,
-):
+def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: str) -> dict:
     """
-    Uses the OpenAI Chat Completions API to produce a strict-JSON repair plan.
-    If OPENAI_API_KEY is missing or the API fails three times, returns a fallback.
+    Generate a repair plan using OpenAI API with chair dependency context.
+    No fallback plan is used — requires a valid API key.
     """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return _fallback(damaged_part)
+        raise RuntimeError("OPENAI_API_KEY not found in environment variables.")
 
-    client = openai.OpenAI(api_key=api_key)
-    model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    client = OpenAI(api_key=api_key)
 
-    prompt = f"""
-You are an expert furniture repair technician.
+    # Build structured context using chair_graph
+    dependencies = get_dependencies(damaged_part)
+    parent = find_parent(damaged_part)
 
-Input:
-- furniture_type: {furniture_type}
-- damaged_part: {damaged_part}
-- damage_type: {damage_type}
-- assembly_step: {assembly_step}
+    context = {
+        "furniture_type": furniture_type,
+        "damaged_part": damaged_part,
+        "damage_type": damage_type,
+        "dependencies": dependencies,
+        "parent_part": parent,
+    }
 
-Return ONLY JSON with this schema:
-{{
-  "repair_plan": {{
-    "tools_needed": ["..."],
-    "materials_needed": ["..."],
-    "safety_precautions": ["..."],
-    "steps": [{{"step_number": 1, "description": "...", "estimated_time": "..."}}],
-    "tips": ["..."],
-    "difficulty_level": "easy|medium|hard"
-  }}
-}}
-"""
+    system_prompt = (
+        "You are a robotics repair planner for furniture. "
+        "Use the provided chair dependency context to create a repair sequence. "
+        "Each step must include: step_id, action, target_part, tool, estimated_time, difficulty. "
+        "Ensure the sequence follows mechanical dependencies: "
+        "disassemble dependent parts before repair, reassemble after. "
+        "Return **only valid JSON** with key 'repair_sequence'."
+    )
 
-    for attempt in range(3):
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You produce safe, practical repair plans. Return ONLY JSON."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format={"type": "json_object"},
-            )
-            obj = json.loads(resp.choices[0].message.content)
-            if "repair_plan" in obj and isinstance(obj["repair_plan"].get("steps", []), list):
-                return obj
-            raise ValueError("Invalid schema from model")
-        except Exception as e:
-            if attempt == 2:
-                out = _fallback(damaged_part)
-                out["warning"] = f"fallback_used: {e}"
-                return out
-            time.sleep(1.5 * (attempt + 1))
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(context)},
+            ],
+            temperature=0.2,
+            max_tokens=1000,
+        )
+
+        raw_output = response.choices[0].message.content.strip()
+        logger.info(f"Raw LLM output: {raw_output[:200]}")
+
+        # Clean markdown formatting if present
+        if raw_output.startswith("```"):
+            raw_output = raw_output.strip("`").replace("json", "").strip()
+
+        json_start = raw_output.find("{")
+        json_end = raw_output.rfind("}")
+        if json_start == -1 or json_end == -1:
+            raise ValueError("No valid JSON detected in LLM output.")
+
+        json_str = raw_output[json_start:json_end + 1]
+        data = json.loads(json_str)
+
+        if "repair_plan" in data:
+            data = {"repair_sequence": data["repair_plan"]}
+        elif "repair_sequence" not in data:
+            raise ValueError("Missing 'repair_sequence' in model output.")
+
+        return data
+
+    except Exception as e:
+        logger.error(f"OpenAI repair plan generation failed: {e}")
+        raise

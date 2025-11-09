@@ -33,9 +33,8 @@ from scripts.capture_image import capture_from_camera
 from scripts.detect_damage import detect_damage_and_parts
 from scripts.render_visual_guidance import render_step_visual
 from scripts.generate_synthetic_data import SyntheticDataGenerator
-from scripts.train_part_detector import train_model as train_classifier
+from scripts.train_detector_frcnn import train_model as train_classifier
 from utils.openai_utils import generate_repair_plan
-from utils.assembly_plan_utils import parse_manual
 
 PARTS = ["seat","back","front_left_leg","front_right_leg",
          "back_left_leg","back_right_leg","armrest_left","armrest_right"]
