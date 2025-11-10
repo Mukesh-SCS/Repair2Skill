@@ -130,13 +130,6 @@ python scripts/robot_executor.py
 #### The simulation will:
 - Load the robotic arm (KUKA iiwa)
 - Parse your repair_plan_*.json and repair_graph_*.json
-- Execute each repair step in dependency order
-
-The simulation will:
-
-Load the robotic arm (KUKA iiwa)
-
-Parse your repair_plan_*.json and repair_graph_*.json
 
 ###  Execute each repair step in dependency order
 ```bash
