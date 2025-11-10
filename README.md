@@ -75,7 +75,7 @@ Repair2Skill/
    git clone <your_repo_url>
    cd FurnitureRepairModel
    python3 -m venv .venv
-   source .venv/bin/activate
+   source .venv/scripts/activate
    pip install -r requirements.txt
 
 ```
@@ -97,37 +97,40 @@ python main.py --generate-data --samples 500
 python main.py --train-frcnn
 ```
 
-Model saved to:
-
+- Model saved to:
+```bash
 ./models/damage_detection/frcnn_model.pth
+``` 
+---
 
-Step 3: Run the Full Pipeline
+## 🚀 Step 3: Run the Full Pipeline
 
 You can use either a captured image (camera) or upload one.
 
-Option 1 – Camera
+### Option 1 – Camera
+```bash
 python main.py --camera
-
-Option 2 – Upload Image
+```
+## Option 2 – Upload Image
+```bash
 python main.py --upload ./data/user_images/my_broken_chair.jpg
+```
+### This will:
+- Detect damaged parts
+- Generate a GPT-4o repair plan
+- Create a hierarchical repair graph
+- Render a visual repair guide
 
 
-This will:
-
-Detect damaged parts
-
-Generate GPT-4o repair plan
-
-Create a hierarchical repair graph
-
-Render a visual repair guide
-
-Step 4: Simulate the Repair in PyBullet
-
-After running the pipeline:
-
+- Step 4: Simulate the Repair in PyBullet
+- After running the pipeline:
+```bash
 python scripts/robot_executor.py
-
+```
+#### The simulation will:
+- Load the robotic arm (KUKA iiwa)
+- Parse your repair_plan_*.json and repair_graph_*.json
+- Execute each repair step in dependency order
 
 The simulation will:
 
@@ -135,9 +138,8 @@ Load the robotic arm (KUKA iiwa)
 
 Parse your repair_plan_*.json and repair_graph_*.json
 
-Execute each repair step in dependency order
-
-📊 Example Output Files
+###  Execute each repair step in dependency order
+```bash
 outputs/
  ├── stage1_parts.json
  ├── repair_plan_back_leg_broken.json
@@ -145,34 +147,22 @@ outputs/
  ├── repair_graph_back_leg.png
 data/visual_guides/
  ├── back_leg_repair_guide.png
+```
 
-🧠 Key Concepts
+## Key Concepts
+- Repair Graph — Built using chair_graph.py and repair_graph.py; ensures repairs follow mechanical dependencies
+(e.g., remove leg → fix → reattach).
+- Faster R-CNN — Used for part + damage detection (higher accuracy than MobileNet).
+- GPT-4o — Generates structured repair steps, required tools, and safety guidance.
+- PyBullet — Executes the full plan using a simulated robotic arm.
 
-Repair Graph: Built using chair_graph.py and repair_graph.py.
-It ensures repairs follow mechanical dependencies (e.g., remove leg → fix → reattach).
+## References
+- Manual2Skill (RSS 2025)
+- PartNet Dataset (CVPR 2019)
+- IKEA-Manual Dataset (NeurIPS 2022)
+- PyBullet Simulator
 
-Faster R-CNN: Used for part + damage detection (higher accuracy than MobileNet).
-
-GPT-4o: Generates structured repair steps, tools, and safety guidance.
-
-PyBullet: Executes the full plan using a simulated robotic arm.
-
-
-
-References
-
-Manual2Skill (RSS 2025)
-
-PartNet Dataset (CVPR 2019)
-
-IKEA-Manual Dataset (NeurIPS 2022)
-
-PyBullet Simulator
-
-🧱 Next Steps
-
-Integrate pose estimation from visual + point cloud data.
-
-Extend PyBullet actions with grasping and force feedback.
-
-Add dynamic 3D chair URDF models for realistic repair interaction.
+### Next Steps
+- Integrate pose estimation from visual + point cloud data
+- Extend PyBullet actions with grasping and force feedback
+- Add dynamic 3D chair URDF models for realistic repair interaction
