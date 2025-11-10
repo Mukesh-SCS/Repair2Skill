@@ -86,16 +86,16 @@ OPENAI_API_KEY=sk-...
 --- 
 
 ## Usage
-
-Step 1: Generate Synthetic Training Data
+### Step 1: Generate Synthetic Training Data
+```bash
 python main.py --generate-data --samples 500
+```
+- Generates images/ and annotations.json under ./data/synthetic_damage/.
 
-
-Generates images/ and annotations.json under ./data/synthetic_damage/.
-
-Step 2: Train the Faster R-CNN Model
+### Step 2: Train the Faster R-CNN Model
+```bash
 python main.py --train-frcnn
-
+```
 
 Model saved to:
 
