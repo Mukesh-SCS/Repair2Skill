@@ -1,14 +1,39 @@
+# =======================================================================
+# Repair2Skill Model Configuration
+# =======================================================================
+# This file defines the model architecture and training hyperparameters
+# for the Faster R-CNN damage detector used in the Repair2Skill pipeline.
+# It allows consistent, reproducible setup for anyone retraining or tuning
+# the detection model.
+# =======================================================================
 
 model:
+  # Model type: Faster R-CNN with ResNet50 backbone + Feature Pyramid Network
   type: fasterrcnn_resnet50_fpn
+
+  # Whether to start from ImageNet-pretrained weights (recommended: true)
   pretrained: true
-  num_classes: 14  # background + 13 labels
+
+  # Number of classes (background + parts + damage types)
+  # e.g., 1 background + 13 object/damage labels = 14
+  num_classes: 14
 
 train:
+  # Training batch size per step (adjust for available GPU memory)
   batch_size: 2
+
+  # Number of full dataset passes (epochs)
   epochs: 10
+
+  # Learning rate for the optimizer (SGD)
   learning_rate: 0.005
+
+  # Momentum term for SGD (improves convergence)
   momentum: 0.9
+
+  # Weight decay (L2 regularization to prevent overfitting)
   weight_decay: 0.0005
+
+  # StepLR scheduler parameters — lowers learning rate every N epochs
   step_size: 5
   gamma: 0.1

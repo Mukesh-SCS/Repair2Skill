@@ -9,4 +9,3 @@ outputs/*
 models/*
 .venv/
 QuickTest.py
-pipeline.txt
