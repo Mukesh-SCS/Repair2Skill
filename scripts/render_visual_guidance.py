@@ -100,13 +100,11 @@ def render_step_visual(model_path, highlighted_part_idx, save_path,
     for part_name, part_info in chair_parts.items():
         x1, y1, x2, y2 = part_info["coords"]
         if part_name == main_damaged_part:
-            color, width = "red", 4
+           color, width = "red", 4
         elif part_name in dependent_parts:
-            color, width = "orange", 3
-        elif part_name in damaged_parts_with_type:
-            color, width = "darkred", 2
+           color, width = "orange", 3
         else:
-            color, width = part_info["color"], 1
+           color, width = part_info["color"], 1
 
         rect = plt.Rectangle((x1, y1), x2 - x1, y2 - y1,
                              facecolor=color, edgecolor="black", linewidth=width)

@@ -67,34 +67,52 @@ class SyntheticDataGenerator:
         return img, parts
 
     def _apply_damage(self, img: Image.Image, parts: Dict[str, List[int]], damage_info: List[Dict]) -> Image.Image:
-        draw = ImageDraw.Draw(img)
+        """
+        Apply visually distinct synthetic damages on chair parts.
+        Increases contrast and shape variety so the detector can learn both part and damage features.
+        """
+        draw = ImageDraw.Draw(img)  
         for d in damage_info:
             part = d["part"]
             typ = d["type"]
             if part not in parts:
                 continue
             x1, y1, x2, y2 = parts[part]
+            w, h = x2 - x1, y2 - y1
+    
             if typ == "missing":
                 draw.rectangle([x1, y1, x2, y2], fill="white", outline="white")
-            elif typ == "cracked":
-                for _ in range(random.randint(2, 5)):
-                    draw.line(
-                        [(random.randint(x1, x2), random.randint(y1, y2)),
-                         (random.randint(x1, x2), random.randint(y1, y2))],
-                        fill="red", width=2
-                    )
+    
             elif typ == "broken":
-                draw.rectangle([x1, y1, x2, y2], fill="darkgray")
-            elif typ == "loose":
-                draw.rectangle([x1, y1, x2, y2], outline="orange", width=3)
-            elif typ == "scratched":
-                for _ in range(random.randint(3, 8)):
+                draw.rectangle([x1, y1, x2, y2], fill="red", outline="black", width=6)
+                for _ in range(3):
+                    draw.line(
+                        [(x1 + random.randint(0, w), y1 + random.randint(0, h)),
+                         (x1 + random.randint(0, w), y1 + random.randint(0, h))],
+                        fill="yellow", width=5
+                    )
+    
+            elif typ == "cracked":
+                for _ in range(6):
                     draw.line(
                         [(random.randint(x1, x2), random.randint(y1, y2)),
                          (random.randint(x1, x2), random.randint(y1, y2))],
-                        fill="brown", width=1
+                        fill="darkred", width=5
+                    )
+    
+            elif typ == "loose":
+                draw.rectangle([x1, y1, x2, y2], outline="orange", width=8)
+    
+            elif typ == "scratched":
+                for _ in range(10):
+                    draw.line(
+                        [(random.randint(x1, x2), random.randint(y1, y2)),
+                         (random.randint(x1, x2), random.randint(y1, y2))],
+                        fill="brown", width=3
                     )
         return img
+
+
 
     def generate_dataset(self, num_samples: int = 1000):
         ann_path = os.path.join(self.output_dir, "annotations.json")

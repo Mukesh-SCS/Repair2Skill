@@ -56,8 +56,15 @@ Repair2Skill/
 │ ├── generate_synthetic_data.py
 │ ├── generate_repair_plan.py
 │ ├── render_visual_guidance.py
-│ ├── repair_graph.py
-│ └── robot_executor.py
+│ └── repair_graph.py
+│
+├── pybullet/
+│    ├── __init__.py             
+│    ├── sim_connection.py
+│    ├── sim_robot.py
+│    ├── sim_scene.py
+│    ├── sim_plan_executor.py
+│    └── run_simulation.py
 │
 ├── utils/
 │ └── openai_utils.py
@@ -141,6 +148,78 @@ outputs/
 data/visual_guides/
  ├── back_leg_repair_guide.png
 ```
+## **PyBullet Simulation (Stage 5)**
+This module executes the Repair2Skill robotic repair simulation.
+It visualizes how a robot would perform each step of the GPT-generated repair plan using PyBullet physics.
+
+### How to Run
+```bash 
+example
+python pybullet/run_simulation.py --plan outputs/repair_plan_back_left_leg_broken.json
+```
+### Optional arguments:
+```bash
+----------------------------------------------------------------
+|Flag	      |                Description                       |
+|--graph	          Path to repair graph JSON (optional)        |
+|--robot         {kuka,panda}	Choose robot arm (default: kuka) |
+|--headless	      Run without GUI (for CI or remote)           |
+----------------------------------------------------------------
+
+Example 
+python pybullet/run_simulation.py --robot panda --headless
+
+```
+## What Happens
+- Connects to PyBullet and sets up gravity, lighting, and camera.
+- Loads a robot arm (KUKA iiwa or Panda).
+- Builds a simple chair using colored block primitives.
+     - Red = damaged part
+     - Gray = normal parts
+- Reads your repair plan (repair_plan_*.json) and optional repair graph.
+
+**Simulates each step:**
+- remove / detach → robot lifts the part and recolors it orange.
+- replace / attach → recolors the part green.
+- tighten / screw → robot wrist wiggles to simulate torque.
+- inspect → brief pause.
+- Keeps the simulation open until you close the window.
+
+
+
+## Modular Design
+```bash
+----------------------------------------------------------------------------------------
+| File                   | Purpose                                                     |
+| ---------------------- | ----------------------------------------------------------- |
+| `sim_connection.py`    | Core simulator setup (camera, physics, stepping)            |
+| `sim_robot.py`         | Robot loading, gripper, and inverse kinematics              |
+| `sim_scene.py`         | Scene construction (chair model, damaged part highlighting) |
+| `sim_plan_executor.py` | Executes actions from the repair plan in dependency order   |
+| `run_simulation.py`    | Integrates all modules and runs the repair process          |
+----------------------------------------------------------------------------------------
+```
+**This structure makes it easy to:**
+Debug or extend one part (e.g., replace robot with UR5).
+Run simulation tests separately.
+Add more complex repair environments later.
+
+**Example Output**
+When you run the simulation:
+The robot arm appears beside a simple chair model.
+Damaged parts are red.
+As each repair step executes, the robot moves near the part, recolors it, and proceeds through the plan.
+
+
+## Next Extensions
+Replace block-based chair with a real URDF model (from PartNet or IKEA dataset).
+Add constraint-based repair (re-attach parts physically).
+Integrate with real grasping for the Panda gripper.
+Support 6D pose input from your detection model.
+
+## Purpose:
+This stage demonstrates the execution phase of the Repair2Skill pipeline — turning AI-generated repair instructions into visible robotic actions.
+
 
 ## Key Concepts
 - Repair Graph — Built using chair_graph.py and repair_graph.py; ensures repairs follow mechanical dependencies
