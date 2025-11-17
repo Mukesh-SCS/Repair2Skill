@@ -52,7 +52,7 @@ def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: st
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY not found in environment variables.")
 
-    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
     client = OpenAI(api_key=api_key)
 
     # Build structured context using chair_graph
@@ -111,4 +111,4 @@ def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: st
 
     except Exception as e:
         logger.error(f"OpenAI repair plan generation failed: {e}")
-        raise
+        raise RuntimeError("OPENAI_API_KEY not found")

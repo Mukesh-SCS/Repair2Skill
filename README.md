@@ -35,43 +35,54 @@ Repair Graph Generation → Visual Guide → PyBullet Simulation
 
 ## 📁 Project Structure
 ```bash
-Repair2Skill/
+REPAIR2SKILL/
+│
+├── configs/
+│   └── model_config.yaml
+│
 ├── data/
-│ ├── synthetic_damage/
-│ └── user_images/
+│   ├── synthetic_damage/
+│   └── user_images/
 │
 ├── models/
-│ └── damage_detection/
+│   └── damage_detection/
+│       └── frcnn_model.pth
 │
 ├── outputs/
-│ ├── stage1_parts.json
-│ ├── repair_plan_<part><damage>.json
-│ ├── repair_graph<part>.json
-│ └── repair_graph_<part>.png
+│   ├── image.txt
+│   └── stage1_parts.json
+│
+├── pybullet_sim/
+│   ├── __init__.py
+│   ├── run_simulation.py
+│   ├── sim_connection.py
+│   ├── sim_plan_executor.py
+│   ├── sim_robot.py
+│   ├── sim_scene.py
 │
 ├── scripts/
-│ ├── capture_image.py
-│ ├── detect_damage.py
-│ ├── train_detector_frcnn.py
-│ ├── generate_synthetic_data.py
-│ ├── generate_repair_plan.py
-│ ├── render_visual_guidance.py
-│ └── repair_graph.py
-│
-├── pybullet/
-│    ├── __init__.py             
-│    ├── sim_connection.py
-│    ├── sim_robot.py
-│    ├── sim_scene.py
-│    ├── sim_plan_executor.py
-│    └── run_simulation.py
+│   ├── __pycache__/
+│   ├── capture_image.py
+│   ├── chair_graph.py
+│   ├── detect_damage.py
+│   ├── generate_repair_plan.py
+│   ├── generate_synthetic_data.py
+│   ├── render_visual_guidance.py
+│   ├── repair_graph.py
+│   └── train_detector_frcnn.py
 │
 ├── utils/
-│ └── openai_utils.py
+│   ├── __pycache__/
+│   └── openai_utils.py
 │
+├── .env
+├── .gitignore
 ├── main.py
-├── requirements.txt
-└── README.md
+├── QuickTest.py
+├── QuickTest1.py
+├── README.md
+└── requirements.txt
+
 ```
 ---
 
@@ -161,9 +172,10 @@ python pybullet/run_simulation.py --plan outputs/repair_plan_back_left_leg_broke
 ```bash
 ----------------------------------------------------------------
 |Flag	      |                Description                       |
-|--graph	          Path to repair graph JSON (optional)        |
-|--robot         {kuka,panda}	Choose robot arm (default: kuka) |
-|--headless	      Run without GUI (for CI or remote)           |
+|-----------|--------------------------------------------------|
+|--graph	   |      Path to repair graph JSON (optional)        |
+|--robot    |    {kuka,panda}	Choose robot arm (default: kuka) |
+|--headless	|     Run without GUI (for CI or remote)           |
 ----------------------------------------------------------------
 
 Example 

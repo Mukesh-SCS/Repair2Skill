@@ -24,30 +24,29 @@ Usage:
 
 import argparse, os, json, subprocess, sys
 from pathlib import Path
-
 from scripts.capture_image import capture_from_camera
 from scripts.detect_damage import detect_damage_and_parts
 from scripts.generate_repair_plan import generate_repair_plan
 from scripts.repair_graph import generate_repair_graph, save_repair_graph_json, visualize_repair_graph
 from scripts.render_visual_guidance import render_step_visual
+from scripts.generate_synthetic_data import SyntheticGenerator
 
 
 def main():
     ap = argparse.ArgumentParser(description="Repair2Skill unified pipeline")
-    ap.add_argument("--generate-data", action="store_true", help="Generate synthetic data")
+    ap.add_argument("--generate-data", action="store_true")
     ap.add_argument("--samples", type=int, default=1000)
-    ap.add_argument("--train-frcnn", action="store_true", help="Train Faster R-CNN detector")
+    ap.add_argument("--train-frcnn", action="store_true")
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--batch", type=int, default=2)
-    ap.add_argument("--camera", action="store_true", help="Capture from Pi Camera/Webcam")
-    ap.add_argument("--upload", type=str, help="Path to input image")
-    ap.add_argument("--threshold", type=float, default=0.25)
+    ap.add_argument("--camera", action="store_true")
+    ap.add_argument("--upload", type=str)
+    ap.add_argument("--threshold", type=float, default=0.5)
     args = ap.parse_args()
 
-    # ---------------- Stage 0: Data generation or training ----------------
+    # ---- Stage 0: Data Gen / Training ----
     if args.generate_data:
-        from scripts.generate_synthetic_data import SyntheticDataGenerator
-        SyntheticDataGenerator().generate_dataset(num_samples=args.samples)
+        SyntheticGenerator().generate_dataset(num_samples=args.samples)
         return
 
     if args.train_frcnn:
@@ -58,9 +57,10 @@ def main():
         ], check=True)
         return
 
-    # ---------------- Stage 1: Capture / Upload Image ----------------
+    # ---- Stage 1: Image Input ----
     if args.camera and args.upload:
         raise ValueError("Use either --camera or --upload, not both.")
+
     image_path = capture_from_camera() if args.camera else args.upload
     if not image_path or not os.path.exists(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
@@ -69,42 +69,44 @@ def main():
 
     model_path = "./models/damage_detection/frcnn_model.pth"
     if not os.path.exists(model_path):
-        print("[ERROR] Model not found. Train first with --train-frcnn.")
+        print("[ERROR] Model not found. Train first.")
         return
 
-    Path("outputs").mkdir(parents=True, exist_ok=True)
+    os.makedirs("outputs", exist_ok=True)
 
-    # ---------------- Stage 2: Detection ----------------
+    # ---- Stage 2: Detection ----
     stage1 = detect_damage_and_parts(image_path, weights=model_path, threshold=args.threshold)
     with open("outputs/stage1_parts.json", "w") as f:
         json.dump(stage1, f, indent=2)
-    print("[OK] Saved outputs/stage1_parts.json")
 
     pairs = stage1.get("detected_pairs", [])
     if not pairs:
-        print("[WARN] No confident part-damage pair found.")
+        print("[WARN] No damaged parts detected.")
         return
 
-    # Select only the most confident damaged part
     dp = max(pairs, key=lambda x: x["damage_confidence"])
     part, dmg = dp["part"], dp["damage_type"]
-    print(f"[INFO] Selected top damage: {part} ({dmg}) with confidence={dp['damage_confidence']:.2f}")
+    print(f"[INFO] Top damage: {part} ({dmg})")
 
-    # --- Stage 3: GPT-4o Repair Plan ---
+    # ---- Stage 3: LLM Plan ----
     plan = generate_repair_plan("Chair", part, dmg)
+    if "repair_sequence" not in plan:
+        print("[ERROR] Invalid repair plan from GPT.")
+        return
+
     plan_path = f"outputs/repair_plan_{part}_{dmg}.json"
     with open(plan_path, "w") as f:
         json.dump(plan, f, indent=2)
-    print(f"[OK] Saved {plan_path}")
 
-    # --- Stage 4: Repair Dependency Graph ---
+    # ---- Stage 4: Graph ----
     graph = generate_repair_graph(part)
     graph_path = save_repair_graph_json(graph, part)
     visualize_repair_graph(graph, f"outputs/repair_graph_{part}.png")
 
-    # --- Stage 5: Visual Repair Guide ---
-    Path("data/visual_guides").mkdir(parents=True, exist_ok=True)
+    # ---- Stage 5: Visual Guide ----
     out_img = f"data/visual_guides/{part}_repair_guide.png"
+    os.makedirs("data/visual_guides", exist_ok=True)
+
     render_step_visual(
         model_path=None,
         highlighted_part_idx=None,
@@ -112,9 +114,16 @@ def main():
         damage_report_path="outputs/stage1_parts.json",
         plan_json_path=plan_path,
     )
-    print(f"[OK] Saved visual guide: {out_img}")
 
-    print("[INFO] Repair2Skill pipeline completed successfully.")
+    # ---- Stage 6: PyBullet ----
+    subprocess.run([
+        sys.executable,
+        "pybullet_sim/run_simulation.py",
+        "--plan", plan_path,
+        "--damaged-part", part
+    ], check=True)
+
+    print("[INFO] Repair2Skill pipeline completed.")
 
 
 if __name__ == "__main__":
