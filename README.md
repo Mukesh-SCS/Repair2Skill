@@ -213,7 +213,7 @@ The simulation:
   - `tighten/screw` → robot wrist wiggles to simulate torque
   - `inspect` → brief pause for inspection
 
-### Step 5: Web UI Dashboard (Optional)
+### Step 5: Web UI Dashboard 
 
 Alternatively, run the interactive Flask web interface for an easier workflow:
 
@@ -239,19 +239,19 @@ Then open **http://localhost:5000** in your browser.
 │                         REPAIR2SKILL PIPELINE                                │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  Stage 1: Image Input          │  Stage 2: Detection                        │
-│  ├─ Camera Capture             │  ├─ Load MobileNet SSD model              │
-│  └─ File Upload                │  └─ outputs/stage1_parts.json              │
-│                                │                                            │
-│  Stage 3: Repair Planning       │  Stage 4: Graph & Visualization           │
-│  ├─ GPT-4o LLM                 │  ├─ Build dependency graph                │
-│  └─ outputs/repair_plan_*.json │  ├─ Render visual guides                  │
-│                                │  └─ outputs/repair_graph_*.json            │
-│                                │                                            │
-│  Stage 5: Robotic Simulation                                               │
-│  ├─ PyBullet Physics Engine                                                │
-│  ├─ KUKA iiwa / Panda Arm                                                  │
-│  └─ Real-time repair execution                                             │
+│  Stage 1: Image Input          │  Stage 2: Detection                         │
+│  ├─ Camera Capture             │  ├─ Load MobileNet SSD model                │
+│  └─ File Upload                │  └─ outputs/stage1_parts.json               │
+│                                │                                             │
+│  Stage 3: Repair Planning      │  Stage 4: Graph & Visualization             │
+│  ├─ GPT-4o LLM                 │  ├─ Build dependency graph                  │
+│  └─ outputs/repair_plan_*.json │  ├─ Render visual guides                    │
+│                                │  └─ outputs/repair_graph_*.json             │
+│                                │                                             │
+│  Stage 5: Robotic Simulation                                                 │
+│  ├─ PyBullet Physics Engine                                                  │
+│  ├─ KUKA iiwa / Panda Arm                                                    │
+│  └─ Real-time repair execution                                               │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -316,15 +316,6 @@ data/visual_guides/
 - [ ] Deploy on **real robotic platforms** (Panda, KUKA, UR5)
 - [ ] Add **reinforcement learning** to optimize repair strategies
 - [ ] Support **multi-robot coordination** for complex repairs
-
-## 🤝 Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -am 'Add my feature'`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
 
 ## 📄 License
 
