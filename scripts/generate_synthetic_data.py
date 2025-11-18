@@ -58,8 +58,6 @@ class SyntheticDataGenerator:
         Define a simple canonical chair shape (seat, back, legs, armrests)
         in a central region of the image.
         """
-        # We'll design coordinates in a nominal 640x480 frame, then
-        # rescale to the requested width/height.
         base_w, base_h = 640.0, 480.0
 
         base_parts = {
@@ -92,12 +90,9 @@ class SyntheticDataGenerator:
         height: int
     ) -> Dict[str, List[int]]:
         """
-        Apply a mild global scale + translation to the whole chair
-        so that we get some variation but preserve structure.
+        Apply a mild global scale + translation to the whole chair.
         """
-        # Compute bounding box of the whole canonical chair
-        xs = []
-        ys = []
+        xs, ys = [], []
         for (x1, y1, x2, y2) in parts.values():
             xs.extend([x1, x2])
             ys.extend([y1, y2])
@@ -106,20 +101,17 @@ class SyntheticDataGenerator:
         cx = 0.5 * (min_x + max_x)
         cy = 0.5 * (min_y + max_y)
 
-        # Mild scale + random translation
-        scale = random.uniform(0.85, 1.15)
-        dx = random.randint(-30, 30)
-        dy = random.randint(-20, 20)
+        scale = random.uniform(0.85, 1.20)
+        dx = random.randint(-40, 40)
+        dy = random.randint(-30, 30)
 
         new_parts = {}
         for name, (x1, y1, x2, y2) in parts.items():
-            # scale around center, then translate
             x1p = (x1 - cx) * scale + cx + dx
             x2p = (x2 - cx) * scale + cx + dx
             y1p = (y1 - cy) * scale + cy + dy
             y2p = (y2 - cy) * scale + cy + dy
 
-            # clamp and sort
             x1p, x2p = sorted([
                 max(0, min(width - 1, x1p)),
                 max(0, min(width - 1, x2p)),
@@ -144,23 +136,70 @@ class SyntheticDataGenerator:
         height: int = 480
     ) -> Tuple[Image.Image, Dict[str, List[int]]]:
         """
-        Create a plain background and draw a structured chair with
+        Create a background and draw a structured chair with
         slightly randomized global transform.
         """
-        img = Image.new("RGB", (width, height), color="white")
+        # Lightly textured background
+        base_color = random.randint(215, 245)
+        bg = np.full((height, width, 3), base_color, dtype=np.uint8)
+        noise = np.random.randint(0, 15, (height, width, 3), dtype=np.uint8)
+        bg = np.clip(bg + noise, 0, 255).astype(np.uint8)
+        img = Image.fromarray(bg)
+
         draw = ImageDraw.Draw(img)
 
         canonical = self._canonical_parts(width, height)
         parts = self._apply_global_transform(canonical, width, height)
 
-        # Draw each part as a filled lightgray rectangle + outline
+        # Draw each part as a filled rectangle + outline
         for _, bb in parts.items():
             draw.rectangle(bb, outline="black", width=2, fill="lightgray")
 
         return img, parts
 
+    def _damage_subbox(self, part_box):
+        """
+        Create a smaller damage sub-box inside the given part bounding box.
+        """
+        x1, y1, x2, y2 = part_box
+        pw = x2 - x1
+        ph = y2 - y1
+        if pw <= 4 or ph <= 4:
+            return part_box
+
+        scale_w = random.uniform(0.3, 0.7)
+        scale_h = random.uniform(0.3, 0.7)
+        dw = pw * scale_w
+        dh = ph * scale_h
+
+        max_x = x2 - dw
+        max_y = y2 - dh
+        if max_x <= x1:
+            max_x = x1
+        if max_y <= y1:
+            max_y = y1
+
+        sx = random.uniform(x1, max_x)
+        sy = random.uniform(y1, max_y)
+
+        ex = sx + dw
+        ey = sy + dh
+
+        return [
+            int(round(sx)),
+            int(round(sy)),
+            int(round(ex)),
+            int(round(ey)),
+        ]
+
     def _apply_damage(self, img, parts, damage_info):
+        """
+        Draw damage inside the part. Uses a smaller sub-box region so that
+        damage boxes are not identical to part boxes.
+        Returns both the modified image and a dict of damage -> bbox.
+        """
         draw = ImageDraw.Draw(img)
+        damage_boxes: Dict[Tuple[str, str], List[int]] = {}
 
         for d in damage_info:
             part = d["part"]
@@ -168,7 +207,10 @@ class SyntheticDataGenerator:
             if part not in parts:
                 continue
 
-            x1, y1, x2, y2 = parts[part]
+            # Create a smaller damage region inside the part
+            sub_box = self._damage_subbox(parts[part])
+            x1, y1, x2, y2 = sub_box
+            damage_boxes[(part, typ)] = sub_box
 
             if typ == "missing":
                 draw.rectangle([x1, y1, x2, y2], fill="white", outline="white")
@@ -201,7 +243,7 @@ class SyntheticDataGenerator:
             elif typ == "loose":
                 draw.rectangle([x1, y1, x2, y2], outline="orange", width=6)
 
-        return img
+        return img, damage_boxes
 
     def generate_dataset(self, num_samples: int = 1000):
         ann_path = os.path.join(self.output_dir, "annotations.json")
@@ -220,7 +262,7 @@ class SyntheticDataGenerator:
                     "severity": round(random.uniform(0.3, 1.0), 2),
                 })
 
-            img = self._apply_damage(img, parts, damage_info)
+            img, damage_boxes = self._apply_damage(img, parts, damage_info)
 
             # Photometric augmentations only (no geometry)
             img_np = np.array(img)
@@ -230,12 +272,25 @@ class SyntheticDataGenerator:
             fname = f"synthetic_{i:05d}.jpg"
             img_aug.save(os.path.join(images_dir, fname))
 
+            # Attach bbox per damage
+            damages_with_boxes = []
+            for d in damage_info:
+                key = (d["part"], d["type"])
+                bbox = damage_boxes.get(key, parts[d["part"]])
+                d_ann = {
+                    "part": d["part"],
+                    "type": d["type"],
+                    "severity": d["severity"],
+                    "bbox": bbox
+                }
+                damages_with_boxes.append(d_ann)
+
             annotations.append({
                 "image_id": i,
                 "filename": fname,
                 "width": img_aug.width,
                 "height": img_aug.height,
-                "damages": damage_info,
+                "damages": damages_with_boxes,
                 "parts": parts,
             })
 
@@ -243,7 +298,6 @@ class SyntheticDataGenerator:
             json.dump(annotations, f, indent=2)
 
         print(f"Generated {num_samples} images and {ann_path}")
-
 
 
 if __name__ == "__main__":

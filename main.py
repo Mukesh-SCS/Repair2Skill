@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--camera", action="store_true")
     ap.add_argument("--upload", type=str)
-    ap.add_argument("--threshold", type=float, default=0.25)
+    ap.add_argument("--threshold", type=float, default=0.10)
     args = ap.parse_args()
 
     # ---- Stage 0: Data Gen / Training ----
