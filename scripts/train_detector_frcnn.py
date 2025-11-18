@@ -148,7 +148,7 @@ def compute_map(model, val_loader, device, iou_threshold=0.5):
 def train_model(model, train_loader, val_loader, device, num_epochs):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-    scaler = torch.cuda.amp.GradScaler() if device == "cuda" else None
+    scaler = torch.amp.GradScaler(device="cuda") if device == "cuda" else None
 
     train_losses, val_losses, map_scores = [], [], []
 
@@ -162,7 +162,7 @@ def train_model(model, train_loader, val_loader, device, num_epochs):
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
             if device == "cuda":
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast(device_type="cuda"):
                     loss_dict = model(imgs, targets)
                     loss = sum(loss_dict.values())
 
@@ -182,20 +182,22 @@ def train_model(model, train_loader, val_loader, device, num_epochs):
         epoch_train_loss = train_loss_sum / len(train_loader)
         train_losses.append(epoch_train_loss)
 
-        # -------- VALIDATION --------
+        # --------------------- VALIDATION ---------------------
         model.eval()
         val_loss_sum = 0.0
-
+        
         with torch.no_grad():
             for imgs, targets in tqdm(val_loader, desc=f"[Val] Epoch {epoch+1}/{num_epochs}"):
                 imgs = [img.to(device) for img in imgs]
                 targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-                loss = sum(model(imgs, targets).values())
+        
+                loss_dict = model(imgs, targets)
+                loss = sum(loss_dict.values())
                 val_loss_sum += loss.item()
-
+        
         epoch_val_loss = val_loss_sum / len(val_loader)
         val_losses.append(epoch_val_loss)
+        
 
         # -------- mAP --------
         epoch_map = compute_map(model, val_loader, device)
