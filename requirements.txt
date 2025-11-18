@@ -1,33 +1,33 @@
 # Core deep learning
-torch>=2.3.0
-torchvision>=0.17.0
-pycocotools>=2.0.7
+torch>=2.1
+torchvision>=0.16
+pycocotools
 
-# Image processing
-opencv-python>=4.10.0
-pillow>=10.3.0
-numpy>=1.26.0
-scikit-learn
-matplotlib>=3.9.0
+# Image and vision
+opencv-python
+pillow
+numpy
+albumentations
+matplotlib
 seaborn
-albumentations>=1.4.0
 
-# API and utilities
-openai>=1.35.0
-python-dotenv>=1.0.1
-requests>=2.32.0
-json5>=0.9.25
-tqdm>=4.66.0
-transformers>=4.43.0
+# Utilities
+tqdm
+requests
+python-dotenv
+openai>=1.0.0
+json5
+transformers
+scikit-learn
 
-# Raspberry Pi camera (commented out for Windows)
+# 3D & simulation
+open3d
+trimesh
+pybullet    # For simulation
+#pybullet_data  # For simulation
+
+# Optional
 # picamera2>=0.3.17
-
-# 3D visualization
-open3d>=0.18.0
-trimesh>=4.3.0
-
-# Optional (uncomment if needed)
 # pytesseract>=0.3.10
-# flask>=3.0.0
-# onnx>=1.16.0
+flask
+onnxruntime

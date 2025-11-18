@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Repair2Skill - Chair Repair Assistant</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .panel {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        
+        h1 { color: #667eea; margin-bottom: 20px; font-size: 28px; }
+        h2 { color: #764ba2; margin: 20px 0 15px 0; font-size: 20px; }
+        h3 { color: #666; margin: 15px 0 10px 0; font-size: 16px; }
+        
+        .upload-section {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        input[type="file"] {
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+        
+        button:hover { transform: translateY(-2px); }
+        button:active { transform: translateY(0); }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        
+        .status-success { background: #d4edda; color: #155724; }
+        .status-error { background: #f8d7da; color: #721c24; }
+        .status-info { background: #d1ecf1; color: #0c5460; }
+        
+        img {
+            width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            margin-top: 10px;
+            max-height: 400px;
+            object-fit: contain;
+        }
+        
+        .code-block {
+            background: #f5f5f5;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        
+        .sim-frame {
+            width: 100%;
+            height: 500px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        
+        .error-message {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .success-message {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #28a745;
+        }
+        
+        .loading {
+            text-align: center;
+            color: #667eea;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        @media (max-width: 1024px) {
+            .container { grid-template-columns: 1fr; }
+            .panel { padding: 15px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="panel">
+        <h1>Upload Broken Chair</h1>
+        
+        <div class="upload-section">
+            <form method="POST" action="/upload" enctype="multipart/form-data" id="uploadForm">
+                <input type="file" name="image" accept="image/*" required>
+                <button type="submit">Run Analysis Pipeline</button>
+            </form>
+        </div>
+
+        {% if damaged_part %}
+        <div class="success-message">
+            Damage detected on: <strong>{{ damaged_part }}</strong>
+        </div>
+        {% endif %}
+
+        <h3>Visual Repair Guide</h3>
+        {% if guide %}
+            <img src="/{{ guide }}" alt="Repair Guide" onerror="this.style.display='none'">
+        {% else %}
+            <p style="color: #999;">Upload an image to see repair guide</p>
+        {% endif %}
+    </div>
+
+    <div class="panel">
+        <h1>Repair Plan & Simulation</h1>
+        
+        <h3>Generated Repair Plan</h3>
+        {% if plan %}
+            {% if plan.startswith("Error") or plan.startswith("No") %}
+                <div class="error-message">{{ plan }}</div>
+            {% else %}
+                <div class="code-block">{{ plan }}</div>
+            {% endif %}
+        {% else %}
+            <p style="color: #999;">Upload an image to generate repair plan</p>
+        {% endif %}
+
+        <h3>PyBullet Simulation</h3>
+        <p style="color: #999; font-size: 14px;">Simulation will display below (requires separate pybullet_stream running on port 5001)</p>
+        <iframe class="sim-frame" src="http://localhost:5001" onerror="this.style.display='none'"></iframe>
+        <p style="color: #999; font-size: 12px;">If simulation doesn't appear, run: <code>python ui/pybullet_stream.py</code> in another terminal</p>
+    </div>
+</div>
+
+<script>
+    document.getElementById('uploadForm').addEventListener('submit', function() {
+        var btn = this.querySelector('button');
+        btn.disabled = true;
+        btn.innerHTML = '<div class="spinner"></div> Processing...';
+    });
+</script>
+
+</body>
+</html>

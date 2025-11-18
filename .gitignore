@@ -7,3 +7,6 @@ __pycache__/
 data/*
 outputs/*
 models/*
+.venv/
+QuickTest.py
+QuickTest1.py

@@ -1,87 +1,110 @@
-"""
-================================================================================
-DESCRIPTION:
-    Predict damage types and chair parts with a MobileNetV3 classifier.
-    Returns Stage-I JSON with filtered top part↔damage pairs for planning.
-
-USAGE:
-    from scripts.detect_damage import detect_damage_and_parts
-    report = detect_damage_and_parts("chair.jpg", "./models/damage_detection/part_detector.pth")
-
-OUTPUTS:
-    {
-      "detected_damages": [{"type": "...", "confidence": float}],
-      "detected_parts":   [{"part": "...", "confidence": float}],
-      "detected_pairs":   [{"part": "...", "damage_type": "...",
-                            "damage_confidence": float, "part_confidence": float}]
-    }
-
-ARGUMENTS:
-    image_path: str
-    model_path: str
-Author Info: Mukesh Mani Tripathi
-================================================================================
-"""
-import os
 import torch
-import torchvision.transforms as transforms
+import json
 from PIL import Image
-from scripts.train_part_detector import FurnitureRepairModel
+import numpy as np
+from torchvision.models.detection import ssdlite320_mobilenet_v3_large
+from torchvision.models.detection.ssdlite import SSDLiteClassificationHead, SSDLiteRegressionHead
+from torchvision import transforms
 
-PART_CLASSES = [
+PARTS = [
     "seat","back","front_left_leg","front_right_leg",
     "back_left_leg","back_right_leg","armrest_left","armrest_right"
 ]
-DAMAGE_CLASSES = ["missing","cracked","broken","loose","scratched"]
 
-def _load_model(model_path: str):
-    model = FurnitureRepairModel()
-    state = torch.load(model_path, map_location=torch.device("cpu"))
-    model.load_state_dict(state)
+DAMAGES = ["missing","cracked","broken","loose","scratched"]
+
+CLASSES = ["__background__"] + PARTS + DAMAGES
+
+
+def load_model(weights_path):
+    model = ssdlite320_mobilenet_v3_large(weights="DEFAULT")
+    num_classes = len(CLASSES)
+
+    # Get the in_channels for each feature level
+    in_channels = [module[1].in_channels for module in model.head.classification_head.module_list]
+    
+    # Set num_anchors (6 per location for SSDLite)
+    num_anchors = [6] * len(in_channels)
+    
+    # Use GroupNorm instead of BatchNorm to avoid issues with small batch sizes
+    norm_layer = lambda num_channels: torch.nn.GroupNorm(min(32, max(1, num_channels // 4)), num_channels)
+    
+    # Replace the heads with ones configured for our num_classes
+    model.head.classification_head = SSDLiteClassificationHead(
+        in_channels, num_anchors, num_classes, norm_layer=norm_layer
+    )
+    model.head.regression_head = SSDLiteRegressionHead(
+        in_channels, num_anchors, norm_layer=norm_layer
+    )
+
+    model.load_state_dict(torch.load(weights_path, map_location="cpu"))
     model.eval()
     return model
 
-def detect_damage_and_parts(image_path: str, model_path: str,
-                            thresh_damage: float = 0.60,
-                            thresh_part: float = 0.60,
-                            top_k_parts: int = 1):
-    if not os.path.exists(model_path):
-        return {"error": f"Model not found: {model_path}"}
 
-    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor()])
+def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth", threshold=0.25):
+    model = load_model(weights)
+    tf = transforms.Compose([transforms.Resize((320,320)), transforms.ToTensor()])
+
     img = Image.open(image_path).convert("RGB")
-    x = tf(img).unsqueeze(0)
+    img_t = tf(img)
 
-    model = _load_model(model_path)
     with torch.no_grad():
-        damage_logits, part_logits = model(x)
-        damage_probs = torch.sigmoid(damage_logits).squeeze().tolist()
-        part_probs   = torch.sigmoid(part_logits).squeeze().tolist()
+        out = model([img_t])[0]
 
-    detected_damages = [
-        {"type": DAMAGE_CLASSES[i], "confidence": float(damage_probs[i])}
-        for i in range(len(DAMAGE_CLASSES)) if damage_probs[i] >= thresh_damage
-    ]
-    detected_parts = [
-        {"part": PART_CLASSES[i], "confidence": float(part_probs[i])}
-        for i in range(len(PART_CLASSES)) if part_probs[i] >= thresh_part
-    ]
+    boxes = out["boxes"].numpy()
+    scores = out["scores"].numpy()
+    labels = out["labels"].numpy()
 
-    # Pair the single best damage with top-K parts (keeps output tight and correct)
-    pairs = []
-    if detected_damages and detected_parts:
-        best_damage = max(detected_damages, key=lambda d: d["confidence"])
-        top_parts = sorted(detected_parts, key=lambda p: p["confidence"], reverse=True)[:top_k_parts]
-        for p in top_parts:
-            pairs.append({
-                "part": p["part"],
-                "damage_type": best_damage["type"],
-                "damage_confidence": best_damage["confidence"],
-                "part_confidence": p["confidence"],
+    parts = []
+    damages = []
+
+    for box, score, label in zip(boxes, scores, labels):
+        if score < threshold:
+            continue
+        cls = CLASSES[label]
+        if cls in PARTS:
+            parts.append((cls, box, score))
+        elif cls in DAMAGES:
+            damages.append((cls, box, score))
+
+    # Pair part + damage by highest overlap
+    detected_pairs = []
+    for p_name, p_box, p_conf in parts:
+        best_dmg = None
+        best_iou = 0
+
+        for d_name, d_box, d_conf in damages:
+            # simple overlap test
+            x1 = max(p_box[0], d_box[0])
+            y1 = max(p_box[1], d_box[1])
+            x2 = min(p_box[2], d_box[2])
+            y2 = min(p_box[3], d_box[3])
+            inter = max(0, x2-x1)*max(0,y2-y1)
+            if inter > best_iou:
+                best_iou = inter
+                best_dmg = (d_name, d_conf)
+
+        if best_dmg:
+            dmg_name, dmg_conf = best_dmg
+            detected_pairs.append({
+                "part": p_name,
+                "part_confidence": float(p_conf),
+                "damage_type": dmg_name,
+                "damage_confidence": float(dmg_conf)
             })
 
     return {
-        "detected_damages": detected_damages,
-        "detected_parts": detected_parts,
-        "detected_pairs": pairs
+        "image_path": image_path,
+        "detected_pairs": detected_pairs
     }
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--image", required=True)
+    args = ap.parse_args()
+
+    result = detect(args.image)
+    print(json.dumps(result, indent=2))
