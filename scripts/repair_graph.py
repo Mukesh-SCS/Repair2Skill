@@ -33,15 +33,22 @@ def generate_repair_graph(damaged_part: str) -> dict:
         for c in children:
             build_subtree(c)
 
-    # Build downward dependencies
+    # Build downward dependencies from the damaged part
     build_subtree(damaged_part)
 
-    # Include upward parent chain
-    parent = find_parent(damaged_part)
+    # Build upward chain: parent -> child along the hierarchy
+    child = damaged_part
+    parent = find_parent(child)
     while parent:
-        if parent not in graph:
-            graph[parent] = [damaged_part]
-        parent = find_parent(parent)
+        # Ensure parent exists in graph
+        graph.setdefault(parent, [])
+        # Ensure edge parent -> child is recorded
+        if child not in graph[parent]:
+            graph[parent].append(child)
+
+        # Move one level up
+        child = parent
+        parent = find_parent(child)
 
     return graph
 

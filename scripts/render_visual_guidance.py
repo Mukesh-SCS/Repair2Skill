@@ -70,14 +70,30 @@ def render_step_visual(model_path, highlighted_part_idx, save_path,
     # --- Load damage report ---
     damaged_parts_with_type = {}
     main_damaged_part = None
+    best_score = -1.0
+
     if damage_report_path and os.path.exists(damage_report_path):
         with open(damage_report_path, "r") as f:
             damage_report = json.load(f)
-        if "detected_pairs" in damage_report:
-            for dp in damage_report["detected_pairs"]:
-                damaged_parts_with_type[dp["part"]] = dp["damage_type"]
-                if main_damaged_part is None:
-                    main_damaged_part = dp["part"]
+
+        pairs = damage_report.get("detected_pairs", [])
+        for dp in pairs:
+            part = dp.get("part")
+            dtype = dp.get("damage_type")
+            if not part or not dtype:
+                continue
+
+            damaged_parts_with_type[part] = dtype
+
+            # Prefer highest damage_confidence (fallback to part_confidence if needed)
+            score = float(dp.get("damage_confidence", 0.0))
+            if score <= 0.0:
+                score = float(dp.get("part_confidence", 0.0))
+
+            if score > best_score:
+                best_score = score
+                main_damaged_part = part
+
 
     # --- Get dependent parts ---
     dependent_parts = []

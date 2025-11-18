@@ -39,7 +39,7 @@ def build_model(weights_path):
 # DETECTION PIPELINE
 # -----------------------------
 @torch.no_grad()
-def detect_damage_and_parts(image_path, weights, threshold=0.5, device=None):
+def detect_damage_and_parts(image_path, weights, threshold=0.2, device=None):
 
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 

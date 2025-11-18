@@ -29,7 +29,7 @@ from scripts.detect_damage import detect_damage_and_parts
 from scripts.generate_repair_plan import generate_repair_plan
 from scripts.repair_graph import generate_repair_graph, save_repair_graph_json, visualize_repair_graph
 from scripts.render_visual_guidance import render_step_visual
-from scripts.generate_synthetic_data import SyntheticGenerator
+from scripts.generate_synthetic_data import SyntheticDataGenerator
 
 
 def main():
@@ -46,7 +46,7 @@ def main():
 
     # ---- Stage 0: Data Gen / Training ----
     if args.generate_data:
-        SyntheticGenerator().generate_dataset(num_samples=args.samples)
+        SyntheticDataGenerator().generate_dataset(num_samples=args.samples)
         return
 
     if args.train_frcnn:
@@ -122,6 +122,7 @@ def main():
         "--plan", plan_path,
         "--damaged-part", part
     ], check=True)
+
 
     print("[INFO] Repair2Skill pipeline completed.")
 

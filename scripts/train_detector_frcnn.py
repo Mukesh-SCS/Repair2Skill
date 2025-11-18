@@ -5,7 +5,10 @@ Train Faster R-CNN for Furniture Part + Damage Detection
 Key Improvements:
  - Uses pretrained backbone (COCO) for stronger generalization
  - Correct classification head size and mapping
- - Randomized geometric augmentations for synthetic chairs
+ - Resizes + color jitter only (keeps bbox geometry correct)
+ - Train/val split, validation loss, and mAP evaluation
+ - Automatic training curve + mAP curve saved
+ - AMP mixed precision for fast GPU training
  - Clean collate_fn and training loop
  - Reproducible training
 ================================================================================
@@ -18,11 +21,13 @@ import argparse
 import torch
 import numpy as np
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader
+from torchvision.ops import box_iou
+from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from torchvision.models.detection import fasterrcnn_resnet50_fpn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 # -----------------------------
 #  DEFINE CLASSES
@@ -32,11 +37,8 @@ PARTS = [
     "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"
 ]
 
-DAMAGES = [
-    "missing", "cracked", "broken", "loose", "scratched"
-]
-
-CLASSES = ["__background__"] + PARTS + DAMAGES   # total = 1 + 8 + 5 = 14
+DAMAGES = ["missing", "cracked", "broken", "loose", "scratched"]
+CLASSES = ["__background__"] + PARTS + DAMAGES
 NAME2IDX = {name: idx for idx, name in enumerate(CLASSES)}
 
 
@@ -49,11 +51,11 @@ class FurnitureDataset(Dataset):
             self.ann = json.load(f)
 
         self.img_dir = img_dir
+        self.resize = resize
 
         self.tf = transforms.Compose([
             transforms.Resize((resize, resize)),
             transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15),
-            transforms.RandomRotation(3),
             transforms.ToTensor()
         ])
 
@@ -64,16 +66,18 @@ class FurnitureDataset(Dataset):
         a = self.ann[idx]
         img = Image.open(os.path.join(self.img_dir, a["filename"])).convert("RGB")
 
+        orig_w, orig_h = img.size
+        sx = self.resize / float(orig_w)
+        sy = self.resize / float(orig_h)
+
         boxes = []
         labels = []
 
-        # Load parts
         for pname, box in a["parts"].items():
             if pname in PARTS:
                 boxes.append(box)
                 labels.append(NAME2IDX[pname])
 
-        # Load damages
         for d in a.get("damages", []):
             part = d["part"]
             dtype = d["type"]
@@ -81,12 +85,11 @@ class FurnitureDataset(Dataset):
                 boxes.append(a["parts"][part])
                 labels.append(NAME2IDX[dtype])
 
-        boxes = torch.as_tensor(boxes, dtype=torch.float32)
-        labels = torch.as_tensor(labels, dtype=torch.int64)
+        scaled = [[x1 * sx, y1 * sy, x2 * sx, y2 * sy] for x1, y1, x2, y2 in boxes]
 
         target = {
-            "boxes": boxes,
-            "labels": labels,
+            "boxes": torch.tensor(scaled, dtype=torch.float32),
+            "labels": torch.tensor(labels, dtype=torch.int64),
             "image_id": torch.tensor([idx])
         }
 
@@ -94,7 +97,7 @@ class FurnitureDataset(Dataset):
 
 
 # -----------------------------
-#  MODEL BUILDER
+#  MODEL
 # -----------------------------
 def build_model(num_classes):
     model = fasterrcnn_resnet50_fpn(weights="DEFAULT")
@@ -108,7 +111,127 @@ def collate_fn(batch):
 
 
 # -----------------------------
+#  mAP EVALUATION
+# -----------------------------
+def compute_map(model, val_loader, device, iou_threshold=0.5):
+    model.eval()
+    aps = []
+
+    with torch.no_grad():
+        for imgs, targets in val_loader:
+            imgs = [img.to(device) for img in imgs]
+            preds = model(imgs)
+
+            for pred, tgt in zip(preds, targets):
+                if len(pred["boxes"]) == 0 or len(tgt["boxes"]) == 0:
+                    continue
+
+                ious = box_iou(pred["boxes"].cpu(), tgt["boxes"].cpu())
+                max_iou_vals, max_iou_idx = ious.max(dim=1)
+
+                tp = sum(
+                    (max_iou_vals >= iou_threshold)
+                    & (pred["labels"].cpu() == tgt["labels"][max_iou_idx].cpu())
+                )
+                fp = len(pred["boxes"]) - tp
+                fn = len(tgt["boxes"]) - tp
+
+                ap = tp / (tp + fp + fn + 1e-6)
+                aps.append(ap)
+
+    return float(np.mean(aps)) if aps else 0.0
+
+
+# -----------------------------
 #  TRAINING LOOP
+# -----------------------------
+def train_model(model, train_loader, val_loader, device, num_epochs):
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+    scaler = torch.cuda.amp.GradScaler() if device == "cuda" else None
+
+    train_losses, val_losses, map_scores = [], [], []
+
+    for epoch in range(num_epochs):
+        # -------- TRAIN --------
+        model.train()
+        train_loss_sum = 0.0
+
+        for imgs, targets in tqdm(train_loader, desc=f"[Train] Epoch {epoch+1}/{num_epochs}"):
+            imgs = [img.to(device) for img in imgs]
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+            if device == "cuda":
+                with torch.cuda.amp.autocast():
+                    loss_dict = model(imgs, targets)
+                    loss = sum(loss_dict.values())
+
+                optimizer.zero_grad()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss_dict = model(imgs, targets)
+                loss = sum(loss_dict.values())
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            train_loss_sum += loss.item()
+
+        epoch_train_loss = train_loss_sum / len(train_loader)
+        train_losses.append(epoch_train_loss)
+
+        # -------- VALIDATION --------
+        model.eval()
+        val_loss_sum = 0.0
+
+        with torch.no_grad():
+            for imgs, targets in tqdm(val_loader, desc=f"[Val] Epoch {epoch+1}/{num_epochs}"):
+                imgs = [img.to(device) for img in imgs]
+                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+
+                loss = sum(model(imgs, targets).values())
+                val_loss_sum += loss.item()
+
+        epoch_val_loss = val_loss_sum / len(val_loader)
+        val_losses.append(epoch_val_loss)
+
+        # -------- mAP --------
+        epoch_map = compute_map(model, val_loader, device)
+        map_scores.append(epoch_map)
+
+        print(f"[Epoch {epoch+1}] Train={epoch_train_loss:.4f}  Val={epoch_val_loss:.4f}  mAP={epoch_map:.4f}")
+
+    # ----- SAVE PLOTS -----
+    os.makedirs("./models/damage_detection", exist_ok=True)
+
+    # Loss curve
+    plt.figure(figsize=(7, 4))
+    plt.plot(train_losses, label="train")
+    plt.plot(val_losses, label="val")
+    plt.legend()
+    plt.xlabel("epoch")
+    plt.ylabel("loss")
+    plt.title("Loss Curve")
+    plt.savefig("./models/damage_detection/training_curve.png")
+    plt.close()
+
+    # mAP curve
+    plt.figure(figsize=(7, 4))
+    plt.plot(map_scores, label="mAP@0.5")
+    plt.legend()
+    plt.xlabel("epoch")
+    plt.ylabel("mAP")
+    plt.title("Validation mAP Curve")
+    plt.savefig("./models/damage_detection/map_curve.png")
+    plt.close()
+
+    return model
+
+
+# -----------------------------
+#  MAIN
 # -----------------------------
 def main():
     parser = argparse.ArgumentParser()
@@ -123,36 +246,23 @@ def main():
     np.random.seed(0)
     torch.manual_seed(0)
 
-    ds = FurnitureDataset(args.ann, args.imgs, args.resize)
-    dl = DataLoader(ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn)
+    dataset = FurnitureDataset(args.ann, args.imgs, args.resize)
+
+    # Split
+    train_size = int(0.85 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_ds, val_ds = random_split(dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=args.batch, shuffle=False, collate_fn=collate_fn)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[INFO] Training on {device}. Samples={len(dataset)}")
 
     model = build_model(len(CLASSES)).to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.003, momentum=0.9, weight_decay=0.0005)
 
-    print(f"[INFO] Training on {device}. Classes={len(CLASSES)} Samples={len(ds)}")
+    model = train_model(model, train_loader, val_loader, device, args.epochs)
 
-    for epoch in range(args.epochs):
-        model.train()
-        total_loss = 0
-
-        for imgs, tgts in tqdm(dl, desc=f"Epoch {epoch+1}/{args.epochs}"):
-            imgs = [img.to(device) for img in imgs]
-            tgts = [{k: v.to(device) for k, v in t.items()} for t in tgts]
-
-            loss_dict = model(imgs, tgts)
-            loss = sum(loss_dict.values())
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-
-        print(f"[EPOCH {epoch+1}] Loss = {total_loss / len(dl):.4f}")
-
-    os.makedirs("./models/damage_detection", exist_ok=True)
     save_path = "./models/damage_detection/frcnn_model.pth"
     torch.save(model.state_dict(), save_path)
     print(f"[OK] Saved model to {save_path}")
