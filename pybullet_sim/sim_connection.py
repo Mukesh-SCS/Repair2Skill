@@ -22,3 +22,15 @@ def step_sim(seconds=0.4, hz=240):
     for _ in range(int(seconds * hz)):
         p.stepSimulation()
         time.sleep(1.0 / hz)
+
+def keep_window_open():
+    """Keep the PyBullet GUI window open until user closes it."""
+    print("[INFO] PyBullet simulation complete. Close the window to exit.")
+    try:
+        while p.isConnected(0):
+            p.stepSimulation()
+            time.sleep(1.0 / 240)  # 240 Hz
+    except KeyboardInterrupt:
+        print("[INFO] User interrupted. Closing simulation.")
+    finally:
+        p.disconnect()

@@ -1,5 +1,5 @@
 import pybullet as p
-from .sim_connection import step_sim
+from sim_connection import step_sim
 
 def load_robot(robot="kuka"):
     if robot == "panda":

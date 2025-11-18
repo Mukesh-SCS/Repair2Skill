@@ -25,7 +25,7 @@ Usage:
 import argparse, os, json, subprocess, sys
 from pathlib import Path
 from scripts.capture_image import capture_from_camera
-from scripts.detect_damage import detect_damage_and_parts
+from scripts.detect_damage import detect as detect_damage_and_parts
 from scripts.generate_repair_plan import generate_repair_plan
 from scripts.repair_graph import generate_repair_graph, save_repair_graph_json, visualize_repair_graph
 from scripts.render_visual_guidance import render_step_visual
@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--camera", action="store_true")
     ap.add_argument("--upload", type=str)
-    ap.add_argument("--threshold", type=float, default=0.5)
+    ap.add_argument("--threshold", type=float, default=0.25)
     args = ap.parse_args()
 
     # ---- Stage 0: Data Gen / Training ----
@@ -51,7 +51,7 @@ def main():
 
     if args.train_frcnn:
         subprocess.run([
-            sys.executable, "scripts/train_detector_frcnn.py",
+            sys.executable, "scripts/train_detector_mobilenet.py",
             "--epochs", str(args.epochs),
             "--batch", str(args.batch)
         ], check=True)
@@ -67,7 +67,7 @@ def main():
 
     print(f"[INFO] Using image: {image_path}")
 
-    model_path = "./models/damage_detection/frcnn_model.pth"
+    model_path = "./models/damage_detection/mobilenet_ssd.pth"
     if not os.path.exists(model_path):
         print("[ERROR] Model not found. Train first.")
         return
@@ -116,13 +116,22 @@ def main():
     )
 
     # ---- Stage 6: PyBullet ----
-    subprocess.run([
-        sys.executable,
-        "pybullet_sim/run_simulation.py",
-        "--plan", plan_path,
-        "--damaged-part", part
-    ], check=True)
-
+    try:
+        result = subprocess.run([
+            sys.executable,
+            "pybullet_sim/run_simulation.py",
+            "--plan", plan_path,
+            "--damaged-part", part
+        ], capture_output=True, text=True, timeout=60)
+        
+        if result.returncode != 0:
+            print(f"[WARN] PyBullet simulation failed: {result.stderr}")
+        else:
+            print("[INFO] PyBullet simulation completed.")
+    except subprocess.TimeoutExpired:
+        print("[WARN] PyBullet simulation timed out.")
+    except Exception as e:
+        print(f"[WARN] PyBullet simulation error: {e}")
 
     print("[INFO] Repair2Skill pipeline completed.")
 

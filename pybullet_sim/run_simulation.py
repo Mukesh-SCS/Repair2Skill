@@ -1,8 +1,8 @@
 import argparse
-from pybullet_sim.sim_connection import connect, reset_camera
-from pybullet_sim.sim_robot import load_robot
-from pybullet_sim.sim_scene import spawn_simple_chair
-from pybullet_sim.sim_plan_executor import load_json, execute_step
+from sim_connection import connect, reset_camera, keep_window_open
+from sim_robot import load_robot
+from sim_scene import spawn_simple_chair
+from sim_plan_executor import load_json, execute_step
 
 
 def main():
@@ -33,7 +33,15 @@ def main():
     print("[INFO] Running", len(seq), "steps from plan:", args.plan)
 
     for step in seq:
+        target_part = step.get("target_part", "")
+        # Skip if part not in simulation
+        if target_part not in parts:
+            print(f"[SKIP] Part '{target_part}' not in simulation, skipping step {step.get('step_id')}")
+            continue
         execute_step(robot, ee_link, gripper, open_val, close_val, parts, step)
+
+    # Keep window open until user closes it
+    keep_window_open()
 
 
 if __name__ == "__main__":
