@@ -1,3 +1,13 @@
+"""Simple CLI to run a repair plan inside the PyBullet scene.
+
+This module wires together the connection, scene, robot, and plan executor
+helpers so you can run a JSON-formatted repair plan and watch the simulated
+robot perform each step.
+
+Typical usage from the project root:
+    python -m pybullet_sim.run_simulation --plan outputs/repair_plan_seat_loose.json
+"""
+
 import argparse
 from sim_connection import connect, reset_camera, keep_window_open
 from sim_robot import load_robot
@@ -6,6 +16,12 @@ from sim_plan_executor import load_json, execute_step
 
 
 def main():
+    """Parse CLI args, set up the simulation, and execute the plan.
+
+    Arguments supported mirror the simple demo needs: which plan to run,
+    an optional repair graph (not required by executor), robot type, and
+    which chair part should be marked as damaged for visualization.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan", required=True, help="Path to repair plan JSON")
     ap.add_argument("--graph", default=None, help="(Optional) repair graph JSON")
@@ -21,26 +37,34 @@ def main():
     )
     args = ap.parse_args()
 
+    # Start a GUI PyBullet instance and position the camera for viewing.
     connect(gui=True)
     reset_camera()
 
     damaged = args.damaged_part
+
+    # Load the requested robot model and the chair scene (with damaged part
+    # highlighted). `load_robot` returns robot id, end-effector link index and
+    # optional gripper joints/values used by the executor.
     robot, ee_link, gripper, open_val, close_val = load_robot(args.robot)
     parts = spawn_simple_chair(damaged)
 
+    # Load plan and iterate through its sequence of steps. The executor
+    # understands a small set of high-level actions and maps them to robot
+    # motions and visual feedback.
     plan = load_json(args.plan)
     seq = plan.get("repair_sequence", [])
     print("[INFO] Running", len(seq), "steps from plan:", args.plan)
 
     for step in seq:
         target_part = step.get("target_part", "")
-        # Skip if part not in simulation
+        # Skip if the plan references a part not present in the scene.
         if target_part not in parts:
             print(f"[SKIP] Part '{target_part}' not in simulation, skipping step {step.get('step_id')}")
             continue
         execute_step(robot, ee_link, gripper, open_val, close_val, parts, step)
 
-    # Keep window open until user closes it
+    # When finished keep the GUI open until the user closes it.
     keep_window_open()
 
 
