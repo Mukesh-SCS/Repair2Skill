@@ -1,0 +1,113 @@
+<?xml version="1.0"?>
+<robot name="simple_chair">
+
+  <!-- Seat -->
+  <link name="seat">
+    <visual>
+      <origin xyz="0 0 0" />
+      <geometry>
+        <box size="0.45 0.45 0.02"/>
+      </geometry>
+      <material name="gray"><color rgba="0.8 0.8 0.8 1"/></material>
+    </visual>
+  </link>
+
+  <!-- Backrest -->
+  <link name="back">
+    <visual>
+      <origin xyz="0 -0.225 0.22"/>
+      <geometry>
+        <box size="0.45 0.04 0.45"/>
+      </geometry>
+      <material name="green"><color rgba="0.3 0.8 0.3 1"/></material>
+    </visual>
+  </link>
+
+  <!-- Legs -->
+  <link name="front_left_leg">
+    <visual>
+      <origin xyz="-0.20 0.20 -0.20"/>
+      <geometry><box size="0.05 0.05 0.40"/></geometry>
+      <material name="gray"><color rgba="0.7 0.7 0.7 1"/></material>
+    </visual>
+  </link>
+
+  <link name="front_right_leg">
+    <visual>
+      <origin xyz="0.20 0.20 -0.20"/>
+      <geometry><box size="0.05 0.05 0.40"/></geometry>
+      <material name="gray"><color rgba="0.7 0.7 0.7 1"/></material>
+    </visual>
+  </link>
+
+  <link name="back_left_leg">
+    <visual>
+      <origin xyz="-0.20 -0.20 -0.20"/>
+      <geometry><box size="0.05 0.05 0.40"/></geometry>
+      <material name="gray"><color rgba="0.7 0.7 0.7 1"/></material>
+    </visual>
+  </link>
+
+  <link name="back_right_leg">
+    <visual>
+      <origin xyz="0.20 -0.20 -0.20"/>
+      <geometry><box size="0.05 0.05 0.40"/></geometry>
+      <material name="gray"><color rgba="0.7 0.7 0.7 1"/></material>
+    </visual>
+  </link>
+
+  <!-- Armrests -->
+  <link name="armrest_left">
+    <visual>
+      <origin xyz="-0.35 0.0 0.15"/>
+      <geometry><box size="0.30 0.05 0.05"/></geometry>
+      <material name="gray"><color rgba="0.7 0.7 0.7 1"/></material>
+    </visual>
+  </link>
+
+  <link name="armrest_right">
+    <visual>
+      <origin xyz="0.35 0.0 0.15"/>
+      <geometry><box size="0.30 0.05 0.05"/></geometry>
+      <material name="gray"><color rgba="0.7 0.7 0.7 1"/></material>
+    </visual>
+  </link>
+
+  <!-- SIMPLE JOINTS (fixed) -->
+  <!-- All links are fixed to the seat -->
+  <joint name="joint_back" type="fixed">
+    <parent link="seat"/>
+    <child link="back"/>
+  </joint>
+
+  <joint name="joint_fll" type="fixed">
+    <parent link="seat"/>
+    <child link="front_left_leg"/>
+  </joint>
+
+  <joint name="joint_frl" type="fixed">
+    <parent link="seat"/>
+    <child link="front_right_leg"/>
+  </joint>
+
+  <joint name="joint_bll" type="fixed">
+    <parent link="seat"/>
+    <child link="back_left_leg"/>
+  </joint>
+
+  <joint name="joint_brl" type="fixed">
+    <parent link="seat"/>
+    <child link="back_right_leg"/>
+  </joint>
+
+  <joint name="joint_arml" type="fixed">
+    <parent link="seat"/>
+    <child link="armrest_left"/>
+  </joint>
+
+  <joint name="joint_armr" type="fixed">
+    <parent link="seat"/>
+    <child link="armrest_right"/>
+  </joint>
+
+</robot>

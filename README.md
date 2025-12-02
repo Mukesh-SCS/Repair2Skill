@@ -1,17 +1,17 @@
 # 🛠️ Repair2Skill — AI-Powered Robotic Furniture Repair
 
 **Repair2Skill** is an AI-driven system that detects damaged furniture parts, generates structured repair plans, and simulates robotic repair execution in **PyBullet**.  
-Inspired by [Manual2Skill (RSS 2025)](https://github.com/owensun2004/Manual2Skill), this framework extends the original concept from *assembly* to *repair*, combining **Faster R-CNN** detection, **GPT-4o** reasoning, and robotic simulation.
+Inspired by [Manual2Skill (RSS 2025)](https://github.com/owensun2004/Manual2Skill), this framework extends the original concept from *assembly* to *repair*, combining **MobileNet SSD** detection, **GPT-4o** reasoning, and robotic simulation.
 
 ---
 
 ## 🧠 Core Capabilities
 
-- Detects **damaged parts** in real furniture using Faster R-CNN.  
+- Detects **damaged parts** in real furniture using **SSDLite-MobileNetV3**.  
 - Generates **step-by-step repair plans** via GPT-4o.  
-- Builds a **repair dependency graph** (Manual2Skill-style hierarchy).  
+- Builds a **repair dependency graph** (hierarchy-aware).  
 - Renders **visual repair guides** highlighting damaged and dependent parts.  
-- Simulates the repair process using a robotic arm in **PyBullet**.
+- Simulates the repair process using a robotic arm in **PyBullet**, available via **CLI** or **Web Dashboard**.
 
 ---
 
@@ -41,18 +41,18 @@ REPAIR2SKILL/
 │   └── model_config.yaml
 │
 ├── data/
-│   ├── synthetic_damage/
-│   └── user_images/
+│   ├── synthetic_damage/            #Generate training data
+│   └── user_images/                 
 │
 ├── models/
 │   └── damage_detection/
-│       └── mobilenet_ssd.pth
+│       └── mobilenet_ssd.pth        #Trained weights
 │
-├── outputs/
+├── outputs/                        #JSON plan , graphs and detection logs
 │   ├── image.txt
 │   └── stage1_parts.json
 │
-├── pybullet_sim/
+├── pybullet_sim/                  #Simulation Engine
 │   ├── __init__.py
 │   ├── run_simulation.py
 │   ├── sim_connection.py
@@ -74,10 +74,13 @@ REPAIR2SKILL/
 ├── utils/
 │   ├── __pycache__/
 │   └── openai_utils.py
-│
+├── ui/                       # Web Interface
+│   ├── app.py                # Flask Backend (with Streaming)
+│   ├── templates/            # HTML with Camera Controls
+│   └── static/
 ├── .env
 ├── .gitignore
-├── main.py
+├── main.py                # Main Pipeline
 ├── QuickTest.py
 ├── QuickTest1.py
 ├── README.md
@@ -124,7 +127,7 @@ python main.py --generate-data --samples 1000
 
 ### Step 2: Train the MobileNet SSD Detector Model
 ```bash
-python main.py --train-frcnn --epochs 20 --batch 2
+python main.py --train-frcnn --epochs 20 --batch 8
 ```
 
 **Options:**
@@ -284,9 +287,9 @@ data/visual_guides/
 
 ## 🔑 Key Concepts
 
-- **MobileNet SSD Detector** — Lightweight, efficient detection model trained on synthetic furniture data. Detects 8 chair parts and 5 damage types in real-time.
+- **MobileNet SSD Detector** — Fast, lightweight object detection optimized for furniture parts and specific damage types.
   
-- **Repair Dependency Graph** — Ensures repairs follow mechanical constraints (e.g., remove leg → fix joint → reattach). Prevents invalid repair sequences.
+- **Repair Dependency Graph** — Logic layer that enforces physical constraints (e.g., "Must remove seat before fixing leg").
   
 - **GPT-4o Repair Planning** — Generates structured, step-by-step repair instructions with:
   - Required tools and materials
@@ -299,6 +302,11 @@ data/visual_guides/
   - Part manipulation and reattachment
   - Torque simulation (for tightening/screwing)
   - Collision detection
+
+- **Procedural Scene**  — sim_scene.py procedurally generates the chair geometry in PyBullet to ensure robust physics interactions, regardless of the input image.
+
+- **Streaming Engine**  — app.py uses a threaded generator to capture PyBullet frames and stream them via MJPEG, enabling "headless" simulation rendering in the browser.
+
 
 ## 📚 References & Inspiration
 
