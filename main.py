@@ -115,25 +115,6 @@ def main():
         plan_json_path=plan_path,
     )
 
-    # ---- Stage 6: PyBullet ----
-    try:
-        result = subprocess.run([
-            sys.executable,
-            "pybullet_sim/run_simulation.py",
-            "--plan", plan_path,
-            "--damaged-part", part
-        ], capture_output=True, text=True, timeout=60)
-        
-        if result.returncode != 0:
-            print(f"[WARN] PyBullet simulation failed: {result.stderr}")
-        else:
-            print("[INFO] PyBullet simulation completed.")
-    except subprocess.TimeoutExpired:
-        print("[WARN] PyBullet simulation timed out.")
-    except Exception as e:
-        print(f"[WARN] PyBullet simulation error: {e}")
-
-    print("[INFO] Repair2Skill pipeline completed.")
 
 
 if __name__ == "__main__":
