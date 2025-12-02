@@ -2,38 +2,36 @@
 # Repair2Skill Model Configuration
 # =======================================================================
 # This file defines the model architecture and training hyperparameters
-# for the Faster R-CNN damage detector used in the Repair2Skill pipeline.
-# It allows consistent, reproducible setup for anyone retraining or tuning
-# the detection model.
+# for the SSDLite MobileNetV3 damage detector used in the pipeline.
 # =======================================================================
 
 model:
-  # Model type: Faster R-CNN with ResNet50 backbone + Feature Pyramid Network
-  type: fasterrcnn_resnet50_fpn
+  # Model architecture used in scripts/detect_damage.py
+  type: ssdlite320_mobilenet_v3_large
+  
+  # Input resolution (SSDLite is optimized for 320x320)
+  input_size: [320, 320]
 
-  # Whether to start from ImageNet-pretrained weights (recommended: true)
-  pretrained: true
+  # Whether to start from pretrained weights (DEFAULT = COCO/ImageNet)
+  weights: DEFAULT
 
-  # Number of classes (background + parts + damage types)
-  # e.g., 1 background + 13 object/damage labels = 14
+  # Number of classes:
+  # 1 Background + 8 Parts (seat, legs, etc.) + 5 Damages (missing, etc.)
+  # Total = 14
   num_classes: 14
 
 train:
-  # Training batch size per step (adjust for available GPU memory)
-  batch_size: 2
+  # Batch size (Increase to 32 if GPU memory allows, decrease to 8 if OOM)
+  batch_size: 16
 
-  # Number of full dataset passes (epochs)
-  epochs: 10
+  # Number of training epochs (Recommended 30+ for synthetic data convergence)
+  epochs: 30
 
-  # Learning rate for the optimizer (SGD)
-  learning_rate: 0.005
+  # Learning rate for Adam optimizer (as defined in train_detector_mobilenet.py)
+  learning_rate: 0.0001
 
-  # Momentum term for SGD (improves convergence)
-  momentum: 0.9
+  # Optimizer type used in training script
+  optimizer: adam
 
-  # Weight decay (L2 regularization to prevent overfitting)
-  weight_decay: 0.0005
-
-  # StepLR scheduler parameters — lowers learning rate every N epochs
-  step_size: 5
-  gamma: 0.1
+  # Path to save the trained model
+  output_path: "./models/damage_detection/mobilenet_ssd.pth"
