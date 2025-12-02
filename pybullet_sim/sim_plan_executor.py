@@ -52,24 +52,48 @@ def show_working_animation(robot, ee_link, parts, part_name):
         print(f"Warning: {part_name} not found in scene")
         return
 
-    target_pos, _ = get_pos(parts[part_name])
+    try:
+        target_pos, _ = get_pos(parts[part_name])
+    except Exception as e:
+        print(f"Warning: Could not get position of {part_name}: {e}")
+        return
     
-    # Move to hover above part
-    hover_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.2]
-    move_ee(robot, ee_link, hover_pos, steps=60)
-    
-    # Move down to part
-    work_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.05]
-    move_ee(robot, ee_link, work_pos, steps=40)
-    
-    # Wiggle action (simulate screwing/unscrewing)
-    for _ in range(3):
-        p.setJointMotorControl2(robot, ee_link, p.TORQUE_CONTROL, force=0) # Relax
-        # Small random moves or just pause
+    try:
+        # Move to hover above part - INCREASED STEPS for visibility
+        hover_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.3]
+        print(f"    Moving to hover position: {hover_pos}")
+        move_ee(robot, ee_link, hover_pos, steps=80)  # Increased from 30
+    except Exception as e:
+        print(f"Warning: Could not move to hover position: {e}")
         step_sim(0.1)
+        return
     
-    # Return to hover
-    move_ee(robot, ee_link, hover_pos, steps=40)
+    try:
+        # Move down to part - INCREASED STEPS
+        work_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.1]
+        print(f"    Moving to work position: {work_pos}")
+        move_ee(robot, ee_link, work_pos, steps=60)  # Increased from 20
+    except Exception as e:
+        print(f"Warning: Could not move to work position: {e}")
+        step_sim(0.1)
+        return
+    
+    # Wiggle action (simulate screwing/unscrewing) - MORE WIGGLES
+    print(f"    Working on {part_name}...")
+    for i in range(5):  # Increased from 3
+        try:
+            p.setJointMotorControl2(robot, ee_link, p.TORQUE_CONTROL, force=0)
+        except:
+            pass
+        step_sim(0.1)  # Increased from 0.05
+    
+    try:
+        # Return to hover - INCREASED STEPS
+        print(f"    Returning to hover position")
+        move_ee(robot, ee_link, hover_pos, steps=60)  # Increased from 20
+    except Exception as e:
+        print(f"Warning: Could not return to hover: {e}")
+        step_sim(0.1)
 
 
 def place_part(robot, ee_link, parts, part_name, gripper, open_val):

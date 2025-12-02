@@ -2,8 +2,7 @@ import torch
 import json
 from PIL import Image
 import numpy as np
-from torchvision.models.detection import ssdlite320_mobilenet_v3_large
-from torchvision.models.detection.ssdlite import SSDLiteClassificationHead, SSDLiteRegressionHead
+from torchvision.models.detection.ssdlite import ssdlite320_mobilenet_v3_large
 from torchvision import transforms, ops
 
 PARTS = [
@@ -15,23 +14,36 @@ DAMAGES = ["missing", "cracked", "broken", "loose", "scratched"]
 
 CLASSES = ["__background__"] + PARTS + DAMAGES
 
-def build_model_for_inference(weights_path, device):
-    model = ssdlite320_mobilenet_v3_large(weights="DEFAULT")
-    num_classes = len(CLASSES)
-    in_channels = [m[1].in_channels for m in model.head.classification_head.module_list]
-    num_anchors = [6] * len(in_channels)
-    norm_layer = lambda n: torch.nn.GroupNorm(min(32, max(1, n // 4)), n)
-    
-    model.head.classification_head = SSDLiteClassificationHead(in_channels, num_anchors, num_classes, norm_layer=norm_layer)
-    model.head.regression_head = SSDLiteRegressionHead(in_channels, num_anchors, norm_layer=norm_layer)
 
+def build_model_for_inference(weights_path, device):
+    """Build model matching the training architecture and load weights."""
+    num_classes = len(CLASSES)
+    
+    # Build model with the same architecture as training (no pretrained weights)
+    model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
+    
+    # Load the trained weights
     state = torch.load(weights_path, map_location=device)
-    model.load_state_dict(state)
+    
+    try:
+        # Try strict loading first
+        model.load_state_dict(state, strict=True)
+    except RuntimeError as e:
+        # If strict loading fails, try with strict=False and handle mismatches
+        missing_keys, unexpected_keys = model.load_state_dict(state, strict=False)
+        
+        if missing_keys:
+            print(f"[WARNING] Missing keys in checkpoint: {len(missing_keys)}")
+        if unexpected_keys:
+            print(f"[WARNING] Unexpected keys in checkpoint: {len(unexpected_keys)}")
+    
     model.to(device)
     model.eval()
     return model
 
-def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth", threshold=0.15, debug=False):
+
+def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
+           threshold=0.15, debug=False):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = build_model_for_inference(weights, device)
 
@@ -46,9 +58,9 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth", th
     with torch.no_grad():
         out = model([img_t])[0]
 
-    # Apply NMS (Non-Maximum Suppression) to remove duplicate overlapping boxes
-    keep_indices = ops.nms(out["boxes"], out["scores"], 0.2) # Strict NMS
-    
+    # NMS: more forgiving threshold to keep nearby boxes
+    keep_indices = ops.nms(out["boxes"], out["scores"], 0.5)
+
     boxes = out["boxes"][keep_indices].detach().cpu().numpy()
     scores = out["scores"][keep_indices].detach().cpu().numpy()
     labels = out["labels"][keep_indices].detach().cpu().numpy()
@@ -56,19 +68,31 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth", th
     parts = []
     damages = []
 
-    for box, score, label in zip(boxes, scores, labels):
-        if score < threshold: continue
-        
-        cls_name = CLASSES[int(label)]
-        if cls_name in PARTS:
-            parts.append((cls_name, box, float(score)))
-        elif cls_name in DAMAGES:
-            damages.append((cls_name, box, float(score)))
+    # Use separate thresholds for parts and damages
+    # Damages naturally have lower confidence in SSD, especially when model is undertrained
+    # For undertrained models, be very permissive with damages
+    part_threshold = max(0.05, float(threshold))
+    damage_threshold = 0.003  # Very low threshold for damages since model is undertrained
 
-    # Pair logic: Containment instead of IoU
-    # We want to know if the DAMAGE is INSIDE the PART.
+    for box, score, label in zip(boxes, scores, labels):
+        cls_name = CLASSES[int(label)]
+        
+        if cls_name in PARTS:
+            if score >= part_threshold:
+                parts.append((cls_name, box, float(score)))
+        elif cls_name in DAMAGES:
+            if score >= damage_threshold:
+                damages.append((cls_name, box, float(score)))
+
+    if debug:
+        print(f"[DEBUG] total kept boxes: {len(boxes)}")
+        for cls_name, box, sc in parts:
+            print(f"[DEBUG] PART  {cls_name:16s} score={sc:.3f} box={box}")
+        for cls_name, box, sc in damages:
+            print(f"[DEBUG] DAMAGE {cls_name:16s} score={sc:.3f} box={box}")
+
+    # Pair logic: containment of damage inside part, but relaxed
     detected_pairs = []
-    
     used_damages = set()
 
     for p_name, p_box, p_conf in parts:
@@ -76,48 +100,83 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth", th
         best_coverage = 0.0
         best_dmg_idx = -1
 
-        for i, (d_name, d_box, d_conf) in enumerate(damages):
-            if i in used_damages: continue
+        px1, py1, px2, py2 = p_box
 
-            # Intersection
-            x1 = max(p_box[0], d_box[0])
-            y1 = max(p_box[1], d_box[1])
-            x2 = min(p_box[2], d_box[2])
-            y2 = min(p_box[3], d_box[3])
-            
+        for i, (d_name, d_box, d_conf) in enumerate(damages):
+            if i in used_damages:
+                continue
+
+            dx1, dy1, dx2, dy2 = d_box
+
+            x1 = max(px1, dx1)
+            y1 = max(py1, dy1)
+            x2 = min(px2, dx2)
+            y2 = min(py2, dy2)
+
             inter_w = max(0.0, x2 - x1)
             inter_h = max(0.0, y2 - y1)
             intersection_area = inter_w * inter_h
-            
-            if intersection_area <= 0: continue
 
-            # Damage Area
-            d_area = (d_box[2] - d_box[0]) * (d_box[3] - d_box[1])
-            
-            # Coverage: How much of the damage is inside this part?
-            coverage = intersection_area / (d_area + 1e-6)
+            if intersection_area <= 0:
+                continue
 
-            # We accept matches if > 50% of the damage box is inside the part
-            if coverage > 0.5 and coverage > best_coverage:
+            d_area = max(1e-6, (dx2 - dx1) * (dy2 - dy1))
+            coverage = intersection_area / d_area
+
+            # Relaxed coverage threshold so imperfect boxes still pair
+            if coverage > 0.15 and coverage > best_coverage:
                 best_coverage = coverage
                 best_dmg = (d_name, d_conf)
                 best_dmg_idx = i
 
-        if best_dmg:
+        if best_dmg is not None:
             dmg_name, dmg_conf = best_dmg
             detected_pairs.append({
                 "part": p_name,
-                "part_confidence": p_conf,
+                "part_confidence": float(p_conf),
                 "damage_type": dmg_name,
-                "damage_confidence": dmg_conf,
-                "overlap_iou": best_coverage # storing coverage here
+                "damage_confidence": float(dmg_conf),
+                "overlap_iou": float(best_coverage)
             })
             used_damages.add(best_dmg_idx)
+
+    # Fallback: if we saw damage but no pair passed coverage threshold,
+    # assign each damage to the nearest part by center distance.
+    if not detected_pairs and damages and parts:
+        if debug:
+            print("[DEBUG] No pairs from coverage; using nearest-part fallback.")
+        for d_name, d_box, d_conf in damages:
+            dx = 0.5 * (d_box[0] + d_box[2])
+            dy = 0.5 * (d_box[1] + d_box[3])
+
+            best_p = None
+            best_dist = 1e9
+            for p_name, p_box, p_conf in parts:
+                px = 0.5 * (p_box[0] + p_box[2])
+                py = 0.5 * (p_box[1] + p_box[3])
+                dist = abs(px - dx) + abs(py - dy)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_p = (p_name, p_conf)
+
+            if best_p is not None:
+                p_name, p_conf = best_p
+                detected_pairs.append({
+                    "part": p_name,
+                    "part_confidence": float(p_conf),
+                    "damage_type": d_name,
+                    "damage_confidence": float(d_conf),
+                    "overlap_iou": 0.0
+                })
+
+    if debug:
+        print(f"[DEBUG] detected_pairs: {json.dumps(detected_pairs, indent=2)}")
 
     return {
         "image_path": image_path,
         "detected_pairs": detected_pairs
     }
+
 
 if __name__ == "__main__":
     import argparse
@@ -125,5 +184,13 @@ if __name__ == "__main__":
     ap.add_argument("--image", required=True)
     ap.add_argument("--weights", default="./models/damage_detection/mobilenet_ssd.pth")
     ap.add_argument("--threshold", type=float, default=0.15)
+    ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
-    print(json.dumps(detect(args.image, weights=args.weights, threshold=args.threshold), indent=2))
+
+    result = detect(
+        args.image,
+        weights=args.weights,
+        threshold=args.threshold,
+        debug=args.debug,
+    )
+    print(json.dumps(result, indent=2))

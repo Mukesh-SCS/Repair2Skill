@@ -55,7 +55,13 @@ def move_ee(robot, ee_link, pos, orn=None, steps=160):
     if orn is None:
         orn = p.getLinkState(robot, ee_link)[5]
 
-    joints = p.calculateInverseKinematics(robot, ee_link, pos, orn)
+    try:
+        joints = p.calculateInverseKinematics(robot, ee_link, pos, orn)
+    except Exception as e:
+        print(f"[WARNING] IK calculation failed for position {pos}: {e}")
+        # Skip this movement if IK fails
+        return
+    
     for j in range(p.getNumJoints(robot)):
         p.setJointMotorControl2(robot, j, p.POSITION_CONTROL, joints[j], force=180)
     # Convert requested step count into seconds at 240 Hz stepping used

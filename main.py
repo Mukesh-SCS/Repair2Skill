@@ -84,7 +84,24 @@ def main():
         print("[WARN] No damaged parts detected.")
         return
 
-    dp = max(pairs, key=lambda x: x["damage_confidence"])
+    # Select the best damage pair with better scoring
+    # Score = part_confidence * damage_confidence * overlap_bonus
+    # This favors damages with good overlap over just high confidence
+    scored_pairs = []
+    for pair in pairs:
+        # Higher overlap = higher penalty/bonus for being in the part
+        overlap = pair.get("overlap_iou", 0.0)
+        overlap_bonus = max(0.5, overlap) if overlap > 0.15 else 0.3
+        
+        score = pair["part_confidence"] * pair["damage_confidence"] * overlap_bonus
+        scored_pairs.append((score, pair))
+    
+    if scored_pairs:
+        scored_pairs.sort(key=lambda x: -x[0])  # Sort by score descending
+        dp = scored_pairs[0][1]  # Get the best pair
+    else:
+        dp = pairs[0]  # Fallback to first pair
+    
     part, dmg = dp["part"], dp["damage_type"]
     print(f"[INFO] Top damage: {part} ({dmg})")
 
