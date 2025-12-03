@@ -18,7 +18,7 @@ def block(size, pos, color):
     half = [s / 2 for s in size]
     col = p.createCollisionShape(p.GEOM_BOX, halfExtents=half)
     vis = p.createVisualShape(p.GEOM_BOX, halfExtents=half, rgbaColor=color)
-    # Mass 0 means static (unmovable) object
+
     return p.createMultiBody(0, col, vis, pos)
 
 
@@ -39,7 +39,7 @@ def spawn_simple_chair(damaged_part_name):
     # ---------------------------------------------------------
     # 1. Configuration (Dimensions & Colors)
     # ---------------------------------------------------------
-    # Base Position of the chair in the world
+   
     bx, by, bz = 0.6, 0.0, 0.0
     
     # Dimensions (Meters)
@@ -98,7 +98,7 @@ def spawn_simple_chair(damaged_part_name):
     )
 
     # -- BACKREST --
-    # Attached to the back edge (-X) of the seat
+   
     back_z = bz + leg_h + seat_h + (back_h / 2)
     back_x = bx - (seat_d / 2) + (back_thickness / 2)
     parts["back"] = block(
@@ -108,13 +108,13 @@ def spawn_simple_chair(damaged_part_name):
     )
 
     # -- ARMRESTS --
-    # Simple bars connecting back to front at a certain height
+   
     arm_h_offset = 0.25
     arm_len = seat_d
     arm_z = bz + leg_h + seat_h + arm_h_offset
     arm_thick = 0.05
     
-    # Left (-Y) and Right (+Y)
+   
     parts["armrest_left"] = block(
         [arm_len, arm_thick, arm_thick],
         [bx, by - (seat_w/2) + (arm_thick/2), arm_z],

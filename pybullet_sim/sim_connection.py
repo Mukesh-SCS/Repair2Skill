@@ -4,7 +4,7 @@ import pybullet as p
 import pybullet_data
 import time
 
-# CHANGE: Default gui to False so it never opens a window unless explicitly asked.
+
 def connect(gui: bool = False):
     """Connect to a PyBullet physics server and perform basic setup.
 

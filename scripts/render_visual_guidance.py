@@ -78,7 +78,7 @@ def render_step_visual(model_path, highlighted_part_idx, save_path,
 
         pairs = damage_report.get("detected_pairs", [])
         
-        # Use smart scoring: part_confidence * damage_confidence * overlap_bonus
+        # Use smart scoring if available, otherwise fall back to old formula
         scored_pairs = []
         for dp in pairs:
             part = dp.get("part")
@@ -88,13 +88,16 @@ def render_step_visual(model_path, highlighted_part_idx, save_path,
 
             damaged_parts_with_type[part] = dtype
             
-            # Calculate smart score (same as main.py and app.py)
-            overlap = dp.get("overlap_iou", 0.0)
-            overlap_bonus = max(0.5, overlap) if overlap > 0.15 else 0.3
-            
-            part_conf = float(dp.get("part_confidence", 0.0))
-            damage_conf = float(dp.get("damage_confidence", 0.0))
-            score = part_conf * damage_conf * overlap_bonus
+            if 'smart_score' in dp:
+                # Use pre-calculated smart score from detection
+                score = dp['smart_score']
+            else:
+                # Fallback for old detection outputs
+                overlap = dp.get("overlap_iou", 0.0)
+                overlap_bonus = max(0.5, overlap) if overlap > 0.15 else 0.3
+                part_conf = float(dp.get("part_confidence", 0.0))
+                damage_conf = float(dp.get("damage_confidence", 0.0))
+                score = part_conf * damage_conf * overlap_bonus
             
             scored_pairs.append((score, part, dtype))
         

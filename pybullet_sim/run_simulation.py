@@ -43,22 +43,21 @@ def main():
 
     damaged = args.damaged_part
 
-    # Load the requested robot model and the chair scene (with damaged part
-    # highlighted). `load_robot` returns robot id, end-effector link index and
-    # optional gripper joints/values used by the executor.
+    # Load the robot model and spawn a simple chair with the specified
+    # part marked as damaged (red color).
+
     robot, ee_link, gripper, open_val, close_val = load_robot(args.robot)
     parts = spawn_simple_chair(damaged)
 
-    # Load plan and iterate through its sequence of steps. The executor
-    # understands a small set of high-level actions and maps them to robot
-    # motions and visual feedback.
+    # Load and execute the repair plan step-by-step.
+
     plan = load_json(args.plan)
     seq = plan.get("repair_sequence", [])
     print("[INFO] Running", len(seq), "steps from plan:", args.plan)
 
     for step in seq:
         target_part = step.get("target_part", "")
-        # Skip if the plan references a part not present in the scene.
+       
         if target_part not in parts:
             print(f"[SKIP] Part '{target_part}' not in simulation, skipping step {step.get('step_id')}")
             continue

@@ -85,12 +85,16 @@ def upload():
         if not pairs:
             return render_template("index.html", plan="No damage detected.", guide=None)
 
-        # Smart damage selection: score = part_conf * damage_conf * overlap_bonus
+        # Smart damage selection using new smart_score from detection
         scored_pairs = []
         for pair in pairs:
-            overlap = pair.get("overlap_iou", 0.0)
-            overlap_bonus = max(0.5, overlap) if overlap > 0.15 else 0.3
-            score = pair["part_confidence"] * pair["damage_confidence"] * overlap_bonus
+            if 'smart_score' in pair:
+                score = pair['smart_score']
+            else:
+                # Fallback for old detection outputs
+                overlap = pair.get("overlap_iou", 0.0)
+                overlap_bonus = max(0.5, overlap) if overlap > 0.15 else 0.3
+                score = pair["part_confidence"] * pair["damage_confidence"] * overlap_bonus
             scored_pairs.append((score, pair))
         
         if scored_pairs:
@@ -198,7 +202,7 @@ def simulation_worker(plan_path, damaged_part, frame_queue):
                                 print("[SIM] Queue full, stopping thread.")
                                 raise InterruptedError("Client Disconnected")
 
-            # Apply Patch
+           
             sim_conn.step_sim = smart_step_sim
             sim_robot.step_sim = smart_step_sim
             sim_exec.step_sim = smart_step_sim
@@ -214,6 +218,16 @@ def simulation_worker(plan_path, damaged_part, frame_queue):
             # Load Scene
             robot_id, ee_idx, gripper_idx, open_val, close_val = sim_robot.load_robot("kuka")
             parts_dict = sim_scene.spawn_simple_chair(damaged_part)
+
+            # Capture original positions of parts so we can fall back to them
+            original_positions = {}
+            for name, handle in parts_dict.items():
+                try:
+                    body, link = handle
+                    pos, _ = p.getBasePositionAndOrientation(body)
+                    original_positions[name] = list(pos)
+                except Exception:
+                    original_positions[name] = None
 
             # Execute
             try:
@@ -242,7 +256,7 @@ def simulation_worker(plan_path, damaged_part, frame_queue):
                 try:
                     target = step.get("target_part", "")
                     if target in parts_dict or target == "":
-                        sim_exec.execute_step(robot_id, ee_idx, gripper_idx, open_val, close_val, parts_dict, step)
+                        sim_exec.execute_step(robot_id, ee_idx, gripper_idx, open_val, close_val, parts_dict, step, original_positions=original_positions)
                     else:
                         print(f"[SIM] Step {i}: Part '{target}' not in scene, skipping")
                     smart_step_sim(0.5)
