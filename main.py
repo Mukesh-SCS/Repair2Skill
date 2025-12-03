@@ -84,7 +84,26 @@ def main():
         print("[WARN] No damaged parts detected.")
         return
 
-    dp = max(pairs, key=lambda x: x["damage_confidence"])
+    # Pick top detected damage-part pair
+    if pairs:
+        # Use pre-calculated smart_score from detection (set in detect_damage.py)
+        # If not present, fall back to old formula for compatibility
+        scored_pairs = []
+        for pair in pairs:
+            if 'smart_score' in pair:
+                score = pair['smart_score']
+            else:
+                # Fallback for old detection outputs
+                overlap = pair.get("overlap_iou", 0.0)
+                overlap_bonus = max(0.5, overlap) if overlap > 0.15 else 0.3
+                score = pair["part_confidence"] * pair["damage_confidence"] * overlap_bonus
+            scored_pairs.append((score, pair))
+        
+        scored_pairs.sort(key=lambda x: -x[0])
+        dp = scored_pairs[0][1]
+    else:
+        dp = pairs[0] if pairs else None
+    
     part, dmg = dp["part"], dp["damage_type"]
     print(f"[INFO] Top damage: {part} ({dmg})")
 

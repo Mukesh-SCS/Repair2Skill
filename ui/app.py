@@ -74,24 +74,57 @@ def upload():
 
         # Load Results
         OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
-        stage1 = json.load(open(os.path.join(OUTPUT_DIR, "stage1_parts.json")))
+        stage1_path = os.path.join(OUTPUT_DIR, "stage1_parts.json")
+        
+        if not os.path.exists(stage1_path):
+            return render_template("index.html", plan="Error loading detection results.", guide=None), 500
+        
+        stage1 = json.load(open(stage1_path))
         pairs = stage1.get("detected_pairs", [])
         
         if not pairs:
             return render_template("index.html", plan="No damage detected.", guide=None)
 
-        top = max(pairs, key=lambda x: x["damage_confidence"])
+        # Smart damage selection using new smart_score from detection
+        scored_pairs = []
+        for pair in pairs:
+            if 'smart_score' in pair:
+                score = pair['smart_score']
+            else:
+                # Fallback for old detection outputs
+                overlap = pair.get("overlap_iou", 0.0)
+                overlap_bonus = max(0.5, overlap) if overlap > 0.15 else 0.3
+                score = pair["part_confidence"] * pair["damage_confidence"] * overlap_bonus
+            scored_pairs.append((score, pair))
+        
+        if scored_pairs:
+            scored_pairs.sort(key=lambda x: -x[0])
+            top = scored_pairs[0][1]
+        else:
+            top = pairs[0]
+        
         part = top["part"]
         dmg_type = top["damage_type"]
         
         plan_path = os.path.join(OUTPUT_DIR, f"repair_plan_{part}_{dmg_type}.json")
+        
+        if not os.path.exists(plan_path):
+            return render_template("index.html", plan="Error loading repair plan.", guide=None), 500
+        
         guide_path = f"data/visual_guides/{part}_repair_guide.png"
+        
+        guide_full_path = os.path.join(BASE_DIR, guide_path)
+        if not os.path.exists(guide_full_path):
+            guide_path = None
 
         LATEST_PLAN_PATH = plan_path
         LATEST_DAMAGED_PART = part
 
+        with open(plan_path, 'r') as f:
+            plan_content = json.load(f)
+        
         return render_template("index.html",
-                               plan=json.dumps(json.load(open(plan_path)), indent=2),
+                               plan=json.dumps(plan_content, indent=2),
                                guide=guide_path,
                                damaged_part=part,
                                sim_ready=True) # Enables the sim view
@@ -169,7 +202,7 @@ def simulation_worker(plan_path, damaged_part, frame_queue):
                                 print("[SIM] Queue full, stopping thread.")
                                 raise InterruptedError("Client Disconnected")
 
-            # Apply Patch
+           
             sim_conn.step_sim = smart_step_sim
             sim_robot.step_sim = smart_step_sim
             sim_exec.step_sim = smart_step_sim
@@ -186,20 +219,49 @@ def simulation_worker(plan_path, damaged_part, frame_queue):
             robot_id, ee_idx, gripper_idx, open_val, close_val = sim_robot.load_robot("kuka")
             parts_dict = sim_scene.spawn_simple_chair(damaged_part)
 
+            # Capture original positions of parts so we can fall back to them
+            original_positions = {}
+            for name, handle in parts_dict.items():
+                try:
+                    body, link = handle
+                    pos, _ = p.getBasePositionAndOrientation(body)
+                    original_positions[name] = list(pos)
+                except Exception:
+                    original_positions[name] = None
+
             # Execute
             try:
                 plan_data = json.load(open(plan_path))
                 sequence = plan_data.get("repair_sequence", [])
-            except:
+            except Exception as e:
+                print(f"[SIM] Failed to load plan: {e}")
                 sequence = []
 
             # Loop indefinitely so user can zoom/rotate even after plan finishes
-            # First, execute the plan
-            smart_step_sim(1.0) # Settle
-            for step in sequence:
-                target = step.get("target_part", "")
-                if target in parts_dict or target == "":
-                    sim_exec.execute_step(robot_id, ee_idx, gripper_idx, open_val, close_val, parts_dict, step)
+            # First, move robot to initial position
+            print("[SIM] Settling simulation...")
+            smart_step_sim(1.0)
+            
+            # Move robot arm to neutral position before starting
+            print("[SIM] Moving robot to initial position...")
+            try:
+                sim_robot.move_ee(robot_id, ee_idx, [0.5, 0.0, 0.5], steps=60)
+            except Exception as e:
+                print(f"[SIM] Could not move to initial position: {e}")
+            
+            smart_step_sim(0.5)
+            
+            # Now execute the plan
+            for i, step in enumerate(sequence):
+                try:
+                    target = step.get("target_part", "")
+                    if target in parts_dict or target == "":
+                        sim_exec.execute_step(robot_id, ee_idx, gripper_idx, open_val, close_val, parts_dict, step, original_positions=original_positions)
+                    else:
+                        print(f"[SIM] Step {i}: Part '{target}' not in scene, skipping")
+                    smart_step_sim(0.5)
+                except Exception as e:
+                    print(f"[SIM] Step {i} error: {e}, continuing...")
                     smart_step_sim(0.5)
 
             # Then, hold the final pose forever (for camera interaction)
@@ -216,18 +278,30 @@ def simulation_worker(plan_path, damaged_part, frame_queue):
 
 @app.route("/simulation_feed")
 def simulation_feed():
-    if not LATEST_PLAN_PATH: return "No plan loaded", 404
+    if not LATEST_PLAN_PATH:
+        return "No plan loaded", 404
+    
+    if not os.path.exists(LATEST_PLAN_PATH):
+        return f"Plan file not found: {LATEST_PLAN_PATH}", 404
     
     frame_queue = queue.Queue(maxsize=10)
-    t = threading.Thread(target=simulation_worker, args=(LATEST_PLAN_PATH, LATEST_DAMAGED_PART, frame_queue))
-    t.daemon = True
+    t = threading.Thread(target=simulation_worker, args=(LATEST_PLAN_PATH, LATEST_DAMAGED_PART, frame_queue), daemon=True)
     t.start()
 
     def generator():
+        timeout_counter = 0
         while True:
-            frame = frame_queue.get()
-            if frame is None: break
-            yield frame
+            try:
+                frame = frame_queue.get(timeout=10)
+                if frame is None:
+                    break
+                yield frame
+                timeout_counter = 0
+            except queue.Empty:
+                timeout_counter += 1
+                if timeout_counter > 2:
+                    print("[SIM] Timeout waiting for frames, ending stream")
+                    break
 
     return Response(generator(), mimetype='multipart/x-mixed-replace; boundary=frame')
 

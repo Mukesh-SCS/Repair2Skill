@@ -9,14 +9,14 @@ CHAIR_GRAPH = {
 
     "seat": ["front_frame", "back_frame", "cushion"],
     "front_frame": ["front_left_leg", "front_right_leg"],
-    "back_frame": ["back_left_leg", "back_right_leg", "backrest"],
+    "back_frame": ["back_left_leg", "back_right_leg", "back"],
 
     "cushion": [],
     "front_left_leg": [],
     "front_right_leg": [],
     "back_left_leg": [],
     "back_right_leg": [],
-    "backrest": []
+    "back": []
 }
 
 
