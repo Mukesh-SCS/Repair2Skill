@@ -65,24 +65,15 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
     scores = out["scores"][keep_indices].detach().cpu().numpy()
     labels = out["labels"][keep_indices].detach().cpu().numpy()
 
-    # Debug: show ALL detections before any filtering
-    if debug:
-        print(f"[DEBUG] ============ ALL RAW DETECTIONS ({len(boxes)} total) ============")
-        for i, (box, score, label) in enumerate(zip(boxes, scores, labels)):
-            cls_name = CLASSES[int(label)]
-            print(f"[DEBUG] [{i:2d}] {cls_name:16s} score={score:.4f}")
-
     parts = []
     damages = []
 
     # Use separate thresholds for parts and damages
-    # Parts: use the provided threshold
-    # Damages: use very low threshold since even well-trained models
-    #          produce low confidence for damage types. We rely on
-    #          pairing logic, spatial overlap, and smart scoring.
-    # NOTE: If you see false positives, increase damage_threshold to 0.002-0.003
+    # Adaptive thresholds based on user input
     part_threshold = max(0.05, float(threshold))
-    damage_threshold = 0.001  # Very permissive - filtering happens via scoring
+    # After proper training, damage threshold should be higher
+    # Start conservative for backward compatibility with undertrained models
+    damage_threshold = max(0.01, float(threshold) * 0.5)  # 50% of part threshold
 
     for box, score, label in zip(boxes, scores, labels):
         cls_name = CLASSES[int(label)]
@@ -95,20 +86,15 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
                 damages.append((cls_name, box, float(score)))
 
     if debug:
-        print(f"[DEBUG] total boxes before threshold: {len(boxes)}")
-        print(f"[DEBUG] part_threshold={part_threshold:.4f}, damage_threshold={damage_threshold:.4f}")
-        print(f"[DEBUG] Parts detected: {len(parts)}, Damages detected: {len(damages)}")
+        print(f"[DEBUG] total kept boxes: {len(boxes)}")
         for cls_name, box, sc in parts:
-            print(f"[DEBUG] PART  {cls_name:16s} score={sc:.3f} box={[f'{b:.2f}' for b in box]}")
+            print(f"[DEBUG] PART  {cls_name:16s} score={sc:.3f} box={box}")
         for cls_name, box, sc in damages:
-            print(f"[DEBUG] DAMAGE {cls_name:16s} score={sc:.3f} box={[f'{b:.2f}' for b in box]}")
+            print(f"[DEBUG] DAMAGE {cls_name:16s} score={sc:.3f} box={box}")
 
     # Pair logic: containment of damage inside part, but relaxed
     detected_pairs = []
     used_damages = set()
-
-    if debug:
-        print(f"[DEBUG] Pairing logic starting with {len(parts)} parts and {len(damages)} damages")
 
     for p_name, p_box, p_conf in parts:
         best_dmg = None
@@ -143,8 +129,6 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
                 best_coverage = coverage
                 best_dmg = (d_name, d_conf)
                 best_dmg_idx = i
-                if debug:
-                    print(f"[DEBUG]   Part {p_name} ← Damage {d_name} (coverage={coverage:.3f}, damage_conf={d_conf:.3f})")
 
         if best_dmg is not None:
             dmg_name, dmg_conf = best_dmg
@@ -156,8 +140,6 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
                 "overlap_iou": float(best_coverage)
             })
             used_damages.add(best_dmg_idx)
-            if debug:
-                print(f"[DEBUG]   → Paired {p_name} with {dmg_name}")
 
     # Fallback: if we saw damage but no pair passed coverage threshold,
     # assign each damage to the nearest part by center distance.
@@ -188,67 +170,73 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
                     "overlap_iou": 0.0
                 })
 
-    # Re-score using ONLY damage confidence (not part confidence) to favor accuracy over confidence
-    # This reduces false positives where a high-confidence part gets paired with low-confidence damage
-    if detected_pairs and debug:
-        print("\n[DEBUG] ===== SCORING ANALYSIS =====")
-        
-    for pair in detected_pairs:
-        dmg_conf = pair['damage_confidence']
-        overlap = pair['overlap_iou']
-        part_conf = pair['part_confidence']
-        
-        # Smart score: favor spatial overlap and damage confidence over part confidence
-        # overlap_bonus: rewards good spatial alignment
-        overlap_bonus = max(0.5, overlap) if overlap > 0.15 else 0.3
-        
-        # Score prioritizes: (1) damage confidence (most important for accuracy)
-        #                    (2) overlap quality (spatial alignment)
-        #                    (3) part confidence (trust high-conf parts less if damage is elsewhere)
-        smart_score = dmg_conf * overlap_bonus * (0.5 + 0.5 * part_conf)
-        
-        pair["smart_score"] = float(smart_score)
-        
-        if debug:
-            print(f"[DEBUG]   {pair['part']:15s} + {pair['damage_type']:10s}")
-            print(f"[DEBUG]     dmg_conf={dmg_conf:.4f}, overlap={overlap:.3f}, part_conf={part_conf:.3f}")
-            print(f"[DEBUG]     smart_score={smart_score:.6f}")
+    if debug:
+        print(f"[DEBUG] detected_pairs: {json.dumps(detected_pairs, indent=2)}")
+
+    # If no pairs detected but we have parts, it means the model isn't detecting damages
+    if not detected_pairs and parts:
+        print("[WARN] Model detected parts but no damages.")
+        if max([d[2] for d in damages], default=0.0) < 0.1:
+            print("[HINT] Model appears undertrained. Retrain with: python scripts/train_detector_mobilenet.py --epochs 100")
+        else:
+            print("[HINT] Try lowering --threshold parameter (current: {:.3f})".format(threshold))
     
-    if debug:
-        print("[DEBUG] ==========================\n")
-
-    if debug:
-        print(f"[DEBUG] Final detected_pairs ({len(detected_pairs)} total):")
-        for pair in detected_pairs:
-            smart_score = pair.get('smart_score', 0)
-            print(f"[DEBUG]   {pair['part']:15s} + {pair['damage_type']:10s} | smart_score={smart_score:.6f}")
-        
-        # Show which pair would be selected
-        if detected_pairs:
-            sorted_pairs = sorted(detected_pairs, key=lambda x: -x.get('smart_score', 0))
-            best = sorted_pairs[0]
-            print(f"[DEBUG] >>> TOP SELECTED: {best['part']} + {best['damage_type']} (score={best.get('smart_score', 0):.6f})")
-
-    # Return results
     return {
         "image_path": image_path,
         "detected_pairs": detected_pairs
     }
 
 
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--image", required=True)
+    ap.add_argument("--image", nargs="*", required=True, help="Image file(s) to process")
     ap.add_argument("--weights", default="./models/damage_detection/mobilenet_ssd.pth")
     ap.add_argument("--threshold", type=float, default=0.15)
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--visualize", action="store_true", help="Save detection visualization")
     args = ap.parse_args()
 
-    result = detect(
-        args.image,
-        weights=args.weights,
-        threshold=args.threshold,
-        debug=args.debug,
-    )
-    print(json.dumps(result, indent=2))
+    results = []
+    for img_path in args.image:
+        result = detect(
+            img_path,
+            weights=args.weights,
+            threshold=args.threshold,
+            debug=args.debug,
+        )
+        results.append(result)
+        print(json.dumps(result, indent=2))
+
+        if args.visualize:
+            try:
+                img = Image.open(img_path).convert("RGB")
+                import matplotlib.pyplot as plt
+                import matplotlib.patches as patches
+                fig, ax = plt.subplots(1)
+                ax.imshow(img)
+                for pair in result.get("detected_pairs", []):
+                    box = pair.get("part_confidence", None)
+                    dmg_box = pair.get("damage_confidence", None)
+                    part = pair.get("part", "")
+                    dmg_type = pair.get("damage_type", "")
+                    # Draw part box (blue)
+                    if "part" in pair and "overlap_iou" in pair:
+                        color = "blue"
+                        rect = patches.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=2, edgecolor=color, facecolor='none')
+                        ax.add_patch(rect)
+                        ax.text(box[0], box[1], part, color=color, fontsize=8)
+                    # Draw damage box (red)
+                    if "damage_type" in pair and "overlap_iou" in pair:
+                        color = "red"
+                        rect = patches.Rectangle((dmg_box[0], dmg_box[1]), dmg_box[2]-dmg_box[0], dmg_box[3]-dmg_box[1], linewidth=2, edgecolor=color, facecolor='none')
+                        ax.add_patch(rect)
+                        ax.text(dmg_box[0], dmg_box[1], dmg_type, color=color, fontsize=8)
+                plt.axis('off')
+                out_path = img_path.replace('.jpg', '_detected.jpg').replace('.png', '_detected.png')
+                plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
+                plt.close()
+                print(f"[VISUALIZE] Saved detection visualization to {out_path}")
+            except Exception as e:
+                print(f"[WARN] Visualization failed: {e}")

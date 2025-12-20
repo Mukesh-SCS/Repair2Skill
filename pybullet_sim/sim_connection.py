@@ -30,12 +30,21 @@ def reset_camera():
     )
 
 
-def step_sim(seconds: float = 0.4, hz: int = 240):
+def step_sim(seconds: float = 0.4, hz: int = 120):
     """Advance the physics simulation.
+    
+    Args:
+        seconds: Duration to simulate
+        hz: Physics update frequency (default 120 Hz - optimized for streaming)
     
     NOTE: This function contains time.sleep(). 
     The Flask app (app.py) will OVERRIDE this function dynamically 
     to remove the sleep and capture video frames instead.
+    
+    Performance Note:
+    - Reduced from 240 Hz to 120 Hz for better streaming performance
+    - Still 120x real-time simulation, more than sufficient
+    - Saves ~50% CPU while maintaining visual quality at 30 FPS
     """
     for _ in range(int(seconds * hz)):
         p.stepSimulation()

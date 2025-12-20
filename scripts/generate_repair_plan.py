@@ -37,11 +37,30 @@ def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: st
     """
     logger.info(f"Requesting OpenAI repair plan for {furniture_type} - {damaged_part} ({damage_type})")
 
+
     plan = call_openai_plan(furniture_type, damaged_part, damage_type)
 
     # Normalize to ensure compatibility with downstream visualization and Webots
     if "repair_sequence" not in plan and "repair_plan" in plan:
         plan = {"repair_sequence": plan["repair_plan"]}
+
+    # --- Post-process: Ensure 'replace' step for broken/missing ---
+    if damage_type in ["broken", "missing"]:
+        found_replace = False
+        for step in plan.get("repair_sequence", []):
+            if step.get("action_type", "").lower() == "replace" and step.get("target_part", "") == damaged_part:
+                found_replace = True
+                break
+        if not found_replace:
+            # Add a replace step at the end
+            max_step = max([s.get("step_id", 0) for s in plan.get("repair_sequence", [])] or [1])
+            plan["repair_sequence"].append({
+                "step_id": max_step + 1,
+                "action_type": "replace",
+                "target_part": damaged_part,
+                "description": f"Install new {damaged_part}.",
+                "tools": ["screwdriver"]
+            })
 
     return plan
 
