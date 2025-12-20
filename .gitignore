@@ -8,5 +8,9 @@ data/*
 outputs/*
 models/*
 .venv/
-QuickTest.py
-QuickTest1.py
+
+.ipynb_checkpoints/
+node_modules/
+package-lock.json
+npm-debug.log
+ui/package-lock.json

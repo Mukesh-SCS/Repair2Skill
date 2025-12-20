@@ -1,4 +1,4 @@
-@import url('../static/style.css');
+/* style.css is loaded via public/index.html, not imported here. */
 
 /* Custom overrides for React */
 .header {

@@ -169,3 +169,22 @@ def render_step_visual(model_path, highlighted_part_idx, save_path,
     plt.close()
 
     print(f"[OK] Correct upright visual guide saved to: {save_path}")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Render visual repair guidance")
+    parser.add_argument("--highlighted_part_idx", type=int, required=True, help="Index of the main damaged part")
+    parser.add_argument("--save_path", type=str, required=True, help="Output PNG path")
+    parser.add_argument("--damage_report_path", type=str, default=None, help="Path to detection JSON")
+    parser.add_argument("--plan_json_path", type=str, default=None, help="Path to repair plan JSON")
+    args = parser.parse_args()
+
+    render_step_visual(
+        model_path=None,
+        highlighted_part_idx=args.highlighted_part_idx,
+        save_path=args.save_path,
+        damage_report_path=args.damage_report_path,
+        plan_json_path=args.plan_json_path,
+        mirror_horizontal=False
+    )
