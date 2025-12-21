@@ -3,6 +3,8 @@
 import pybullet as p
 import pybullet_data
 import time
+import numpy as np
+from PIL import Image
 
 
 def connect(gui: bool = False):
@@ -20,14 +22,24 @@ def connect(gui: bool = False):
     return cid
 
 
-def reset_camera():
+def reset_camera(dist=1.8, yaw=40, pitch=-35, target=[0.6, 0.0, 0.4]):
     """Set the PyBullet debug visualizer camera to a sensible default."""
     p.resetDebugVisualizerCamera(
-        cameraDistance=1.8,
-        cameraYaw=40,
-        cameraPitch=-35,
-        cameraTargetPosition=[0.6, 0.0, 0.4]
+        cameraDistance=dist,
+        cameraYaw=yaw,
+        cameraPitch=pitch,
+        cameraTargetPosition=target
     )
+
+
+def save_screenshot(filename, width=640, height=480):
+    """Save a screenshot of the current camera view."""
+    img = p.getCameraImage(width, height)
+    rgba = img[2]  # rgbPixels
+    arr = np.array(rgba, dtype=np.uint8).reshape((height, width, 4))
+    rgb = arr[:, :, :3]  # Drop alpha channel
+    image = Image.fromarray(rgb)
+    image.save(filename)
 
 
 def step_sim(seconds: float = 0.4, hz: int = 120):

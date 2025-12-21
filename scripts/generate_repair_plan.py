@@ -18,7 +18,13 @@ Author Info: Mukesh Mani Tripathi
 import json
 import logging
 import argparse
+import os
+import sys
 from typing import Dict, Any
+
+# Add the parent directory to sys.path to import utils
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from utils.openai_utils import generate_repair_plan as call_openai_plan
 
 logger = logging.getLogger(__name__)

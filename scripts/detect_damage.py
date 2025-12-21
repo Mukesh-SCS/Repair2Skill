@@ -1,5 +1,6 @@
 import torch
 import json
+import sys
 from PIL import Image
 import numpy as np
 from torchvision.models.detection.ssdlite import ssdlite320_mobilenet_v3_large
@@ -33,9 +34,9 @@ def build_model_for_inference(weights_path, device):
         missing_keys, unexpected_keys = model.load_state_dict(state, strict=False)
         
         if missing_keys:
-            print(f"[WARNING] Missing keys in checkpoint: {len(missing_keys)}")
+            print(f"[WARNING] Missing keys in checkpoint: {len(missing_keys)}", file=sys.stderr)
         if unexpected_keys:
-            print(f"[WARNING] Unexpected keys in checkpoint: {len(unexpected_keys)}")
+            print(f"[WARNING] Unexpected keys in checkpoint: {len(unexpected_keys)}", file=sys.stderr)
     
     model.to(device)
     model.eval()
@@ -175,11 +176,11 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
 
     # If no pairs detected but we have parts, it means the model isn't detecting damages
     if not detected_pairs and parts:
-        print("[WARN] Model detected parts but no damages.")
+        print("[WARN] Model detected parts but no damages.", file=sys.stderr)
         if max([d[2] for d in damages], default=0.0) < 0.1:
-            print("[HINT] Model appears undertrained. Retrain with: python scripts/train_detector_mobilenet.py --epochs 100")
+            print("[HINT] Model appears undertrained. Retrain with: python scripts/train_detector_mobilenet.py --epochs 100", file=sys.stderr)
         else:
-            print("[HINT] Try lowering --threshold parameter (current: {:.3f})".format(threshold))
+            print("[HINT] Try lowering --threshold parameter (current: {:.3f})".format(threshold), file=sys.stderr)
     
     return {
         "image_path": image_path,
@@ -237,6 +238,6 @@ if __name__ == "__main__":
                 out_path = img_path.replace('.jpg', '_detected.jpg').replace('.png', '_detected.png')
                 plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
                 plt.close()
-                print(f"[VISUALIZE] Saved detection visualization to {out_path}")
+                print(f"[VISUALIZE] Saved detection visualization to {out_path}", file=sys.stderr)
             except Exception as e:
-                print(f"[WARN] Visualization failed: {e}")
+                print(f"[WARN] Visualization failed: {e}", file=sys.stderr)

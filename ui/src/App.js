@@ -1,5 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
+
+// Helper to make absolute URLs for images
+const makeAbsoluteUrl = (url) => {
+  if (!url) return null;
+  if (url.startsWith('http')) return url;
+  return `http://localhost:3002${url}`;
+};
 
 function App() {
   const [image, setImage] = useState(null);
@@ -10,6 +17,83 @@ function App() {
   const [simReady, setSimReady] = useState(false);
   const [error, setError] = useState('');
   const [simRunning, setSimRunning] = useState(false);
+  const [camera, setCamera] = useState({ dist: 1, yaw: 0, pitch: -45 });
+  const [simImage, setSimImage] = useState(null);
+
+  // For streaming simulation
+  const [simLog, setSimLog] = useState([]);
+  const [simStreaming, setSimStreaming] = useState(false);
+
+  const handleRunSimulation = async () => {
+    setSimRunning(true);
+    try {
+      const response = await fetch('/simulate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ plan: plan, damagedPart: damagedPart, camera: camera })
+      });
+      const data = await response.json();
+      if (data.error) {
+        setError(data.error);
+      } else {
+        if (data.screenshot) {
+          setSimImage(makeAbsoluteUrl(data.screenshot));
+        }
+        console.log(data.output);
+        alert('Simulation completed! Check console for output.');
+      }
+    } catch (err) {
+      setError('Failed to run simulation: ' + err.message);
+    }
+    setSimRunning(false);
+  };
+
+  // Streaming simulation handler
+  const handleRunSimulationStream = () => {
+    setSimStreaming(true);
+    setSimLog([]);
+    setSimImage(null);
+    setError('');
+    const evtSource = new EventSource('http://localhost:3002/simulate-stream', { withCredentials: false });
+    // Send POST body via fetch, then open SSE (workaround: use fetch to send, then SSE to receive)
+    fetch('http://localhost:3002/simulate-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plan: plan, damagedPart: damagedPart, camera: camera })
+    });
+    evtSource.onmessage = (event) => {
+      setSimLog((prev) => [...prev, event.data]);
+    };
+    evtSource.addEventListener('log', (event) => {
+      setSimLog((prev) => [...prev, event.data]);
+    });
+    evtSource.addEventListener('error', (event) => {
+      setSimLog((prev) => [...prev, '[ERROR] ' + event.data]);
+    });
+    evtSource.addEventListener('done', (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.screenshot) {
+          setSimImage(makeAbsoluteUrl(data.screenshot));
+        }
+      } catch (e) {}
+      setSimStreaming(false);
+      evtSource.close();
+    });
+    evtSource.onerror = (err) => {
+      setError('Simulation stream error');
+      setSimStreaming(false);
+      evtSource.close();
+    };
+  };
+
+  useEffect(() => {
+    if (simReady && !simRunning) {
+      handleRunSimulation();
+    }
+  }, [simReady]);
 
   const handleImageChange = (e) => {
     if (e.target.files && e.target.files[0]) {
@@ -26,7 +110,7 @@ function App() {
     const formData = new FormData();
     formData.append('file', image);
     try {
-      const response = await fetch('http://localhost:3001/upload', {
+      const response = await fetch('/upload', {
         method: 'POST',
         body: formData
       });
@@ -35,7 +119,7 @@ function App() {
         setError(data.error);
       } else {
         setPlan(data.plan);
-        setGuide(data.guide ? `http://localhost:3001${data.guide}` : null);
+        setGuide(data.guide ? `${data.guide}` : null);
         setDamagedPart(data.damaged_part);
         setSimReady(true);
       }
@@ -48,25 +132,6 @@ function App() {
   const handleCameraChange = (param, value) => {
     setCamera((prev) => ({ ...prev, [param]: value }));
     // TODO: Send to backend if needed
-  };
-
-  const handleRunSimulation = async () => {
-    setSimRunning(true);
-    try {
-      const response = await fetch('http://localhost:3001/simulate', {
-        method: 'POST'
-      });
-      const data = await response.json();
-      if (data.error) {
-        setError(data.error);
-      } else {
-        alert('Simulation completed! Check console for output.');
-        console.log(data.output);
-      }
-    } catch (err) {
-      setError('Failed to run simulation: ' + err.message);
-    }
-    setSimRunning(false);
   };
 
   return (
@@ -137,10 +202,23 @@ function App() {
               <h3 style={{ color: '#2c3e50', fontWeight: 600 }}>
                 <span role="img" aria-label="movie">🎬</span> Live Repair Simulation
               </h3>
-              <button onClick={handleRunSimulation} disabled={simRunning} style={{ background: 'linear-gradient(135deg, #1e90ff 0%, #00ced1 100%)', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '5px', cursor: 'pointer', marginBottom: '1rem' }}>
-                {simRunning ? 'Running Simulation...' : '▶️ Run Simulation'}
-              </button>
-              <img src="/static/simulation_placeholder.png" alt="Simulation Stream" style={{ background: '#000', border: '2px solid #333', borderRadius: '10px', maxWidth: '100%' }} />
+              <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+                <button onClick={handleRunSimulation} disabled={simRunning || simStreaming} style={{ background: 'linear-gradient(135deg, #1e90ff 0%, #00ced1 100%)', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '5px', cursor: 'pointer' }}>
+                  {simRunning ? 'Running Simulation...' : '▶️ Run Simulation'}
+                </button>
+                <button onClick={handleRunSimulationStream} disabled={simRunning || simStreaming} style={{ background: 'linear-gradient(135deg, #00ced1 0%, #1e90ff 100%)', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '5px', cursor: 'pointer' }}>
+                  {simStreaming ? 'Streaming...' : '📡 Run Simulation (Stream)'}
+                </button>
+              </div>
+              <img src={simImage || "/static/simulation_placeholder.png"} alt="Simulation Stream" style={{ background: '#000', border: '2px solid #333', borderRadius: '10px', maxWidth: '100%' }} />
+              {/* Simulation Log Area */}
+              <div style={{ background: '#222', color: '#0f0', fontFamily: 'monospace', fontSize: '13px', borderRadius: '8px', padding: '10px', marginTop: '1rem', minHeight: '120px', maxHeight: '200px', overflowY: 'auto' }}>
+                {simLog.length === 0 ? (
+                  <span style={{ color: '#888' }}>Simulation log will appear here...</span>
+                ) : (
+                  simLog.map((line, idx) => <div key={idx}>{line}</div>)
+                )}
+              </div>
               <div className="controls" style={{ marginTop: '1.5rem', padding: '1rem', background: '#fff', borderRadius: '10px', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px', border: '1px solid #e8e8e8' }}>
                 <div className="control-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                   <label style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: '#1e90ff', textTransform: 'uppercase', letterSpacing: '0.5px' }}>🔍 Zoom (Distance)</label>

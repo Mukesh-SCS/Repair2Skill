@@ -35,11 +35,15 @@ def main():
         default="back_left_leg",
         help="Name of the damaged chair part to highlight in the scene"
     )
+    ap.add_argument("--camera-dist", type=float, default=1.8, help="Camera distance")
+    ap.add_argument("--camera-yaw", type=float, default=40, help="Camera yaw")
+    ap.add_argument("--camera-pitch", type=float, default=-35, help="Camera pitch")
+    ap.add_argument("--screenshot", help="Path to save screenshot")
     args = ap.parse_args()
 
     # Start a GUI PyBullet instance and position the camera for viewing.
-    connect(gui=True)
-    reset_camera()
+    connect(gui=False)
+    reset_camera(dist=args.camera_dist, yaw=args.camera_yaw, pitch=args.camera_pitch)
 
     damaged = args.damaged_part
 
@@ -48,6 +52,16 @@ def main():
 
     robot, ee_link, gripper, open_val, close_val = load_robot(args.robot)
     parts = spawn_simple_chair(damaged)
+    
+    # Capture original positions for replacement logic
+    from sim_plan_executor import get_pos
+    original_positions = {}
+    for part_name, part_handle in parts.items():
+        try:
+            pos, _ = get_pos(part_handle)
+            original_positions[part_name] = pos
+        except Exception as e:
+            print(f"[WARN] Could not get position for {part_name}: {e}")
 
     # Load and execute the repair plan step-by-step.
 
@@ -61,10 +75,15 @@ def main():
         if target_part not in parts:
             print(f"[SKIP] Part '{target_part}' not in simulation, skipping step {step.get('step_id')}")
             continue
-        execute_step(robot, ee_link, gripper, open_val, close_val, parts, step)
+        execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, original_positions=original_positions)
 
-    # When finished keep the GUI open until the user closes it.
-    keep_window_open()
+    # When finished, save screenshot if requested
+    if args.screenshot:
+        from sim_connection import save_screenshot
+        save_screenshot(args.screenshot)
+        print(f"[INFO] Screenshot saved to {args.screenshot}")
+    else:
+        print("[INFO] Simulation complete.")
 
 
 if __name__ == "__main__":

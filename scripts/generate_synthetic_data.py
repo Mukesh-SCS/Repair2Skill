@@ -78,9 +78,21 @@ class EnhancedSyntheticDataGenerator:
     # =====================================================================
     
     def _generate_background(self, width: int, height: int) -> Image.Image:
-        """Generate realistic background with texture variation."""
+        """Generate realistic background with texture variation and real images."""
         # Choose background style
-        style = random.choice(['solid', 'gradient', 'texture'])
+        style = random.choice(['solid', 'gradient', 'texture', 'real'])
+        
+        if style == 'real':
+            real_bg_dir = os.path.join(self.output_dir, "real_backgrounds")
+            if os.path.exists(real_bg_dir):
+                files = [f for f in os.listdir(real_bg_dir) if f.lower().endswith(('.jpg', '.png'))]
+                if files:
+                    fname = random.choice(files)
+                    try:
+                        bg = Image.open(os.path.join(real_bg_dir, fname)).convert('RGB').resize((width, height))
+                        return bg
+                    except Exception:
+                        pass  # Fall back to generated backgrounds
         
         if style == 'solid':
             # Solid color with slight variation
@@ -110,21 +122,6 @@ class EnhancedSyntheticDataGenerator:
             bg = Image.fromarray(bg_array)
         
         return bg
-        def _generate_background(self, width: int, height: int) -> Image.Image:
-            """Generate realistic background with texture variation and real images."""
-            style = random.choice(['solid', 'gradient', 'texture', 'real'])
-            if style == 'real':
-                real_bg_dir = os.path.join(self.output_dir, "real_backgrounds")
-                if os.path.exists(real_bg_dir):
-                    files = [f for f in os.listdir(real_bg_dir) if f.lower().endswith(('.jpg', '.png'))]
-                    if files:
-                        fname = random.choice(files)
-                        try:
-                            bg = Image.open(os.path.join(real_bg_dir, fname)).convert('RGB').resize((width, height))
-                            return bg
-                        except Exception:
-                            pass
-            # ...existing code...
     
     # =====================================================================
     # CHAIR GEOMETRY
@@ -470,24 +467,24 @@ class EnhancedSyntheticDataGenerator:
         
         self._print_statistics()
         print(f"✓ Saved statistics to {stats_path}")
-            # Save a grid of sample images for inspection
-            try:
-                import math
-                grid_size = min(25, N)
-                grid_cols = 5
-                grid_rows = math.ceil(grid_size / grid_cols)
-                grid_img = Image.new('RGB', (grid_cols * W, grid_rows * H))
-                for i in range(grid_size):
-                    img_path = os.path.join(images_dir, f"synthetic_{i:05d}.jpg")
-                    if os.path.exists(img_path):
-                        img_sample = Image.open(img_path)
-                        x = (i % grid_cols) * W
-                        y = (i // grid_cols) * H
-                        grid_img.paste(img_sample, (x, y))
-                grid_img.save(os.path.join(self.output_dir, "sample_grid.jpg"), quality=95)
-                print("✓ Saved sample grid to sample_grid.jpg")
-            except Exception as e:
-                print(f"[WARN] Could not save sample grid: {e}")
+        # Save a grid of sample images for inspection
+        try:
+            import math
+            grid_size = min(25, N)
+            grid_cols = 5
+            grid_rows = math.ceil(grid_size / grid_cols)
+            grid_img = Image.new('RGB', (grid_cols * W, grid_rows * H))
+            for i in range(grid_size):
+                img_path = os.path.join(images_dir, f"synthetic_{i:05d}.jpg")
+                if os.path.exists(img_path):
+                    img_sample = Image.open(img_path)
+                    x = (i % grid_cols) * W
+                    y = (i // grid_cols) * H
+                    grid_img.paste(img_sample, (x, y))
+            grid_img.save(os.path.join(self.output_dir, "sample_grid.jpg"), quality=95)
+            print("✓ Saved sample grid to sample_grid.jpg")
+        except Exception as e:
+            print(f"[WARN] Could not save sample grid: {e}")
     
         def generate_negative_samples(self, N: int = 200):
             """Generate images with no damage for negative samples."""

@@ -29,6 +29,8 @@ Author: Mukesh Mani Tripathi
 import matplotlib.pyplot as plt
 import os
 import json
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from scripts.chair_graph import get_dependencies
 
 
