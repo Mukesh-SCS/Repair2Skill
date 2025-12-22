@@ -1,252 +1,331 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useEffect, useCallback } from 'react';
 import './App.css';
 
-// Helper to make absolute URLs for images
-const makeAbsoluteUrl = (url) => {
-  if (!url) return null;
-  if (url.startsWith('http')) return url;
-  return `http://localhost:3002${url}`;
-};
+function PipelineHeader() {
+  const stages = [
+    { label: 'Image Input', icon: '🖼️' },
+    { label: 'Detection', icon: '🔍' },
+    { label: 'Repair Planning', icon: '📝' },
+    { label: 'Graph & Visualization', icon: '📊' },
+    { label: 'Robotic Simulation', icon: '🤖' },
+  ];
+  return (
+    <div className="pipeline-header">
+      {stages.map((stage, idx) => (
+        <div className="pipeline-stage" key={stage.label}>
+          <span className="stage-icon">{stage.icon}</span>
+          <span className="stage-label">{stage.label}</span>
+          {idx < stages.length - 1 && <span className="stage-arrow">→</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 
 function App() {
   const [image, setImage] = useState(null);
   const [plan, setPlan] = useState('');
-  const [guide, setGuide] = useState(null);
   const [damagedPart, setDamagedPart] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [simReady, setSimReady] = useState(false);
-  const [error, setError] = useState('');
-  const [simRunning, setSimRunning] = useState(false);
-  const [camera, setCamera] = useState({ dist: 1, yaw: 0, pitch: -45 });
+  const [guide, setGuide] = useState('');
   const [simImage, setSimImage] = useState(null);
+  const [simReady, setSimReady] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  // For streaming simulation
-  const [simLog, setSimLog] = useState([]);
-  const [simStreaming, setSimStreaming] = useState(false);
+  const [simError, setSimError] = useState('');
+  const [showStream, setShowStream] = useState(false);
+  const [streamPlanPath, setStreamPlanPath] = useState('');
+  
+  // Camera controls - set to user's preferred defaults
+  const [cameraDist, setCameraDist] = useState(1.70);
+  const [cameraYaw, setCameraYaw] = useState(180.0);
+  const [cameraPitch, setCameraPitch] = useState(9.0);
 
-  const handleRunSimulation = async () => {
-    setSimRunning(true);
+  // Update camera parameters
+  const updateCamera = useCallback(async (dist, yaw, pitch) => {
     try {
-      const response = await fetch('/simulate', {
+      const res = await fetch('/update-camera', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ plan: plan, damagedPart: damagedPart, camera: camera })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dist, yaw, pitch })
       });
-      const data = await response.json();
-      if (data.error) {
-        setError(data.error);
-      } else {
-        if (data.screenshot) {
-          setSimImage(makeAbsoluteUrl(data.screenshot));
-        }
-        console.log(data.output);
-        alert('Simulation completed! Check console for output.');
+      if (!res.ok) {
+        console.error('Failed to update camera');
       }
-    } catch (err) {
-      setError('Failed to run simulation: ' + err.message);
+    } catch (error) {
+      console.error('Error updating camera:', error);
     }
-    setSimRunning(false);
-  };
+  }, []);
 
-  // Streaming simulation handler
-  const handleRunSimulationStream = () => {
-    setSimStreaming(true);
-    setSimLog([]);
-    setSimImage(null);
-    setError('');
-    const evtSource = new EventSource('http://localhost:3002/simulate-stream', { withCredentials: false });
-    // Send POST body via fetch, then open SSE (workaround: use fetch to send, then SSE to receive)
-    fetch('http://localhost:3002/simulate-stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan: plan, damagedPart: damagedPart, camera: camera })
-    });
-    evtSource.onmessage = (event) => {
-      setSimLog((prev) => [...prev, event.data]);
-    };
-    evtSource.addEventListener('log', (event) => {
-      setSimLog((prev) => [...prev, event.data]);
-    });
-    evtSource.addEventListener('error', (event) => {
-      setSimLog((prev) => [...prev, '[ERROR] ' + event.data]);
-    });
-    evtSource.addEventListener('done', (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.screenshot) {
-          setSimImage(makeAbsoluteUrl(data.screenshot));
-        }
-      } catch (e) {}
-      setSimStreaming(false);
-      evtSource.close();
-    });
-    evtSource.onerror = (err) => {
-      setError('Simulation stream error');
-      setSimStreaming(false);
-      evtSource.close();
-    };
-  };
-
+  // Handle camera parameter changes with faster updates for real-time control
   useEffect(() => {
-    if (simReady && !simRunning) {
-      handleRunSimulation();
-    }
-  }, [simReady]);
+    // Update camera even if stream hasn't started yet (for when it does start)
+    const timer = setTimeout(() => {
+      updateCamera(cameraDist, cameraYaw, cameraPitch);
+    }, 100); // Faster debounce 100ms for more responsive controls
+    return () => clearTimeout(timer);
+  }, [cameraDist, cameraYaw, cameraPitch, updateCamera]);
 
-  const handleImageChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setImage(e.target.files[0]);
-      setError('');
-    }
-  };
+  // Note: Simulation now auto-starts after upload, so this function is no longer needed
+  // Keeping it for potential manual restart functionality
+
+  // Auto-start simulation when UI loads
+  useEffect(() => {
+    // Start simulation automatically on component mount
+    const startDefaultSim = async () => {
+      try {
+        const res = await fetch('/start-default-sim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            camera: { dist: cameraDist, yaw: cameraYaw, pitch: cameraPitch }
+          })
+        });
+        if (res.ok) {
+          setShowStream(true);
+          setSimReady(true);
+          console.log('Default simulation started');
+        }
+      } catch (error) {
+        console.error('Error starting default simulation:', error);
+      }
+    };
+    
+    startDefaultSim();
+  }, []); // Run once on mount
+
+  // Live polling for simulation image - faster for real-time streaming
+  useEffect(() => {
+    if (!simReady || !showStream) return;
+    
+    setSimError('');
+    let consecutiveErrors = 0;
+    const maxErrors = 20; // Allow more time for simulation to start
+    
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`/sim-stream.jpg?t=${Date.now()}`);
+        if (res.ok) {
+          setSimImage(`/sim-stream.jpg?t=${Date.now()}`);
+          consecutiveErrors = 0; // Reset error count on success
+          setSimError(''); // Clear any previous errors
+        } else {
+          consecutiveErrors++;
+          // Only show error after many consecutive failures
+          if (consecutiveErrors >= maxErrors) {
+            setSimError('Simulation image not available. The simulation may still be starting...');
+          }
+        }
+      } catch (error) {
+        consecutiveErrors++;
+        // Don't show error immediately, wait for multiple failures
+        if (consecutiveErrors >= maxErrors) {
+          setSimError('Unable to load simulation stream. Check if simulation is running.');
+        }
+      }
+    }, 200); // Poll every 200ms for smoother real-time streaming (5 FPS)
+    
+    return () => clearInterval(id);
+  }, [simReady, showStream]);
 
   const handleUpload = async (e) => {
     e.preventDefault();
-    if (!image) return;
-    setLoading(true);
-    setError('');
-    const formData = new FormData();
-    formData.append('file', image);
-    try {
-      const response = await fetch('/upload', {
-        method: 'POST',
-        body: formData
-      });
-      const data = await response.json();
-      if (data.error) {
-        setError(data.error);
-      } else {
-        setPlan(data.plan);
-        setGuide(data.guide ? `${data.guide}` : null);
-        setDamagedPart(data.damaged_part);
-        setSimReady(true);
-      }
-    } catch (err) {
-      setError('Failed to upload: ' + err.message);
+    if (!image) {
+      setSimError('Please select an image first');
+      return;
     }
-    setLoading(false);
-  };
-
-  const handleCameraChange = (param, value) => {
-    setCamera((prev) => ({ ...prev, [param]: value }));
-    // TODO: Send to backend if needed
+    
+    setLoading(true);
+    setSimError('');
+    setGuide('');
+    setSimImage(null);
+    setSimReady(false);
+    setPlan('');
+    setDamagedPart('');
+    
+    try {
+      const fd = new FormData();
+      fd.append('file', image);
+      const res = await fetch('/upload', { method: 'POST', body: fd });
+      
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || 'Upload failed');
+      }
+      
+      const data = await res.json();
+      setPlan(data.plan);
+      setDamagedPart(data.damaged_part);
+      setGuide(data.guide);
+      
+      // Set the plan path for streaming
+      if (data.plan_path) {
+        setStreamPlanPath(data.plan_path);
+      } else if (data.plan_file) {
+        // Construct full path if only filename provided
+        setStreamPlanPath(`ui/uploads/${data.plan_file}`);
+      } else {
+        console.warn('No plan_path or plan_file in response');
+      }
+      
+      // Auto-start simulation if server started it
+      if (data.simulation_started) {
+        setShowStream(true);
+        setSimReady(true);
+        console.log('Simulation auto-started by server');
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      setSimError(error.message || 'Failed to process image');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <>
-      <div className="header" style={{ background: 'linear-gradient(135deg, #1e90ff 0%, #00ced1 100%)', padding: '2rem 0', boxShadow: '0 8px 32px rgba(30,144,255,0.15)' }}>
-        <h1 style={{ color: '#fff', fontSize: '3rem', fontWeight: 900, letterSpacing: '2px', textShadow: '0 4px 16px #1e90ff' }}>
-          <span role="img" aria-label="wrench">🔧</span> Repair2Skill
-        </h1>
-        <p style={{ color: '#f8f9fa', fontSize: '1.2rem', fontWeight: 400, marginTop: '0.5rem' }}>
-          Intelligent Furniture Damage Detection & <span style={{ color: '#ffc107', fontWeight: 700 }}>Repair Planning</span> System
-        </p>
+    <div className="app-container">
+      <div className="app-header">
+        <h1 className="main-title">🔧 Repair2Skill</h1>
+        <PipelineHeader />
       </div>
-      <div className="container" style={{ background: '#fff', borderRadius: '16px', boxShadow: '0 2px 16px rgba(30,144,255,0.10)', padding: '2rem', marginTop: '2rem' }}>
-        {/* Left Panel */}
-        <div className="panel" style={{ background: 'linear-gradient(135deg, #f8f9fa 0%, #e8ecff 100%)', borderRadius: '12px', boxShadow: '0 2px 8px #1e90ff22' }}>
-          <h1 style={{ color: '#1e90ff', fontWeight: 700, fontSize: '2rem' }}>
-            <span role="img" aria-label="camera">📸</span> Upload Broken Chair
-          </h1>
-          <div className="upload-section">
-            <form onSubmit={handleUpload} id="uploadForm">
-              <input type="file" accept="image/*" required onChange={handleImageChange} style={{ borderColor: '#1e90ff', background: '#f0f4ff' }} />
-              <button type="submit" disabled={loading} style={{ background: 'linear-gradient(135deg, #1e90ff 0%, #00ced1 100%)', color: '#fff' }}>
-                {loading ? <div className="spinner"></div> : '🚀 Run Analysis Pipeline'}
-              </button>
-            </form>
-          </div>
-          {damagedPart && (
-            <div className="status-badge status-success" style={{ background: '#d4edda', color: '#155724', border: '1px solid #c3e6cb' }}>
-              ✓ Damage detected on: <strong style={{ color: '#dc3545' }}>{damagedPart}</strong>
-            </div>
-          )}
-          {error && (
-            <div className="error-message" style={{ background: '#f8d7da', color: '#721c24', borderLeft: '4px solid #dc3545' }}>⚠️ {error}</div>
-          )}
-          <h3 style={{ color: '#2c3e50', fontWeight: 600, marginTop: '2rem' }}>
-            <span role="img" aria-label="clipboard">📋</span> Visual Repair Guide
-          </h3>
-          {guide ? (
-            <img src={guide} alt="Repair Guide" onError={e => e.target.style.display='none'} style={{ border: '2px solid #1e90ff', borderRadius: '10px', boxShadow: '0 2px 8px #1e90ff22', maxWidth: '100%', marginTop: '1rem' }} />
-          ) : (
-            <p style={{ color: '#999', textAlign: 'center', padding: '30px 0' }}>
-              <span role="img" aria-label="camera">📷</span> Upload an image to generate repair guide
-            </p>
-          )}
+
+      {/* Stage 1: Image Input - Full Width */}
+      <section className="upload-section">
+        <div className="upload-card">
+          <h2>🖼️ 1. Image Input</h2>
+          <form onSubmit={handleUpload} className="upload-form">
+            <input type="file" onChange={e => setImage(e.target.files[0])} />
+            <button type="submit" disabled={loading || !image} className="upload-btn">
+              {loading ? '⏳ Processing…' : '▶️ Run Analysis'}
+            </button>
+          </form>
         </div>
-        {/* Right Panel */}
-        <div className="panel" style={{ background: 'linear-gradient(135deg, #f8f9fa 0%, #e8ecff 100%)', borderRadius: '12px', boxShadow: '0 2px 8px #1e90ff22' }}>
-          <h1 style={{ color: '#00ced1', fontWeight: 700, fontSize: '2rem' }}>
-            <span role="img" aria-label="tools">🛠️</span> Repair Plan & Simulation
-          </h1>
-          <h3 style={{ color: '#2c3e50', fontWeight: 600, marginTop: '2rem' }}>
-            <span role="img" aria-label="notepad">📝</span> Generated Repair Plan
-          </h3>
-          {plan ? (
-            plan.startsWith('Error') || plan.startsWith('No') ? (
-              <div className="error-message" style={{ background: '#f8d7da', color: '#721c24', borderLeft: '4px solid #dc3545' }}>⚠️ {plan}</div>
+      </section>
+
+      {/* Two Column Layout */}
+      <div className="main-content">
+        {/* Left Column: Detection, Planning & Visual Guide */}
+        <div className="left-column">
+          {/* Stage 2 & 3: Detection & Repair Planning */}
+          <section className="stage-card detection-card">
+            <h2>🔍 2. Detection & 📝 3. Repair Planning</h2>
+            {plan ? (
+              <div className="plan-content">
+                <div className="damaged-part-badge">
+                  <span className="badge-label">Damaged Part:</span>
+                  <span className="badge-value">{damagedPart || 'N/A'}</span>
+                </div>
+                <div className="plan-container">
+                  <h4>Repair Plan:</h4>
+                  <pre className="code-block">{plan}</pre>
+                </div>
+              </div>
             ) : (
-              <div className="code-block" style={{ background: '#1e1e1e', color: '#00ff9d', border: '1px solid #333', borderRadius: '8px', padding: '18px', margin: '15px 0', fontFamily: 'Courier New, Monaco, monospace', fontSize: '13px', maxHeight: '350px', overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5, boxShadow: 'inset 0 0 10px rgba(0,0,0,0.3)' }}>{plan}</div>
-            )
-          ) : (
-            <p style={{ color: '#999', textAlign: 'center', padding: '30px 0' }}>
-              <span role="img" aria-label="chart">📊</span> Upload an image to generate repair plan
-            </p>
-          )}
-          {/* Simulation Section */}
-          {simReady ? (
-            <div className="simulation-container" style={{ background: '#f8f9fa', borderRadius: '10px', border: '2px solid #e8e8e8', marginTop: '2rem', padding: '1rem' }}>
-              <h3 style={{ color: '#2c3e50', fontWeight: 600 }}>
-                <span role="img" aria-label="movie">🎬</span> Live Repair Simulation
-              </h3>
-              <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
-                <button onClick={handleRunSimulation} disabled={simRunning || simStreaming} style={{ background: 'linear-gradient(135deg, #1e90ff 0%, #00ced1 100%)', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '5px', cursor: 'pointer' }}>
-                  {simRunning ? 'Running Simulation...' : '▶️ Run Simulation'}
-                </button>
-                <button onClick={handleRunSimulationStream} disabled={simRunning || simStreaming} style={{ background: 'linear-gradient(135deg, #00ced1 0%, #1e90ff 100%)', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '5px', cursor: 'pointer' }}>
-                  {simStreaming ? 'Streaming...' : '📡 Run Simulation (Stream)'}
-                </button>
+              <div className="placeholder">Upload an image to see detection and repair plan.</div>
+            )}
+          </section>
+
+          {/* Stage 4: Visual Repair Guide */}
+          <section className="stage-card guide-card">
+            <h2>🖼️ Visual Repair Guide</h2>
+            {guide ? (
+              <div className="guide-container">
+                <img src={guide} alt="Visual Guide" className="guide-image" />
               </div>
-              <img src={simImage || "/static/simulation_placeholder.png"} alt="Simulation Stream" style={{ background: '#000', border: '2px solid #333', borderRadius: '10px', maxWidth: '100%' }} />
-              {/* Simulation Log Area */}
-              <div style={{ background: '#222', color: '#0f0', fontFamily: 'monospace', fontSize: '13px', borderRadius: '8px', padding: '10px', marginTop: '1rem', minHeight: '120px', maxHeight: '200px', overflowY: 'auto' }}>
-                {simLog.length === 0 ? (
-                  <span style={{ color: '#888' }}>Simulation log will appear here...</span>
-                ) : (
-                  simLog.map((line, idx) => <div key={idx}>{line}</div>)
-                )}
+            ) : (
+              <div className="placeholder">Visual guide will appear here after analysis.</div>
+            )}
+          </section>
+        </div>
+
+        {/* Right Column: Robotic Simulation */}
+        <div className="right-column">
+          <section className="stage-card simulation-card">
+            <h2>🤖 5. Robotic Simulation (Live Stream)</h2>
+            {streamPlanPath && (
+              <div className="plan-info">
+                <span className="plan-label">Plan:</span>
+                <span className="plan-file">{streamPlanPath.split(/[\\/]/).pop()}</span>
               </div>
-              <div className="controls" style={{ marginTop: '1.5rem', padding: '1rem', background: '#fff', borderRadius: '10px', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px', border: '1px solid #e8e8e8' }}>
-                <div className="control-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <label style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: '#1e90ff', textTransform: 'uppercase', letterSpacing: '0.5px' }}>🔍 Zoom (Distance)</label>
-                  <input type="range" min="0.4" max="2.5" step="0.1" value={camera.dist} onChange={e => handleCameraChange('dist', e.target.value)} />
+            )}
+            
+            {/* Camera Controls */}
+            <div className="camera-controls">
+              <h3>📹 Camera Controls</h3>
+              <div className="camera-grid">
+                <div className="camera-control-item">
+                  <label>
+                    <span className="control-label">Zoom (Distance)</span>
+                    <span className="control-value">{cameraDist.toFixed(2)}</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="5.0"
+                    step="0.1"
+                    value={cameraDist}
+                    onChange={(e) => setCameraDist(parseFloat(e.target.value))}
+                    className="camera-slider"
+                  />
                 </div>
-                <div className="control-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <label style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: '#00ced1', textTransform: 'uppercase', letterSpacing: '0.5px' }}>🔄 Rotate (Yaw)</label>
-                  <input type="range" min="0" max="360" step="5" value={camera.yaw} onChange={e => handleCameraChange('yaw', e.target.value)} />
+                <div className="camera-control-item">
+                  <label>
+                    <span className="control-label">Rotate (Yaw)</span>
+                    <span className="control-value">{cameraYaw.toFixed(1)}°</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="360"
+                    step="1"
+                    value={cameraYaw}
+                    onChange={(e) => setCameraYaw(parseFloat(e.target.value))}
+                    className="camera-slider"
+                  />
                 </div>
-                <div className="control-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <label style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: '#ffc107', textTransform: 'uppercase', letterSpacing: '0.5px' }}>📐 Angle (Pitch)</label>
-                  <input type="range" min="-89" max="-10" step="5" value={camera.pitch} onChange={e => handleCameraChange('pitch', e.target.value)} />
+                <div className="camera-control-item">
+                  <label>
+                    <span className="control-label">Angle (Pitch)</span>
+                    <span className="control-value">{cameraPitch.toFixed(1)}°</span>
+                  </label>
+                  <input
+                    type="range"
+                    min="-90"
+                    max="90"
+                    step="1"
+                    value={cameraPitch}
+                    onChange={(e) => setCameraPitch(parseFloat(e.target.value))}
+                    className="camera-slider"
+                  />
                 </div>
               </div>
             </div>
-          ) : (
-            <>
-              <h3 style={{ color: '#2c3e50', fontWeight: 600 }}>
-                <span role="img" aria-label="movie">🎬</span> Live Repair Simulation
-              </h3>
-              <p style={{ color: '#999', textAlign: 'center', padding: '30px 0' }}>
-                <span role="img" aria-label="hourglass">⏳</span> Simulation will appear here after analysis
-              </p>
-            </>
-          )}
+            
+            {/* Simulation Stream */}
+            <div className="simulation-view">
+              {simError && (
+                <div className="sim-error">{simError}</div>
+              )}
+              {simImage ? (
+                <img 
+                  src={`${simImage}?t=${Date.now()}`} 
+                  alt="Live PyBullet Stream" 
+                  className="sim-stream-image"
+                  onError={(e) => {
+                    console.warn('Image load error, will retry on next poll');
+                  }}
+                />
+              ) : (
+                <div className="sim-placeholder">
+                  {simReady ? '⏳ Waiting for simulation to start...' : '🚀 Simulation will start automatically'}
+                </div>
+              )}
+            </div>
+          </section>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
