@@ -1,0 +1,7 @@
+{
+  "name": "repair2skill",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "cd ui && npm start"
+  }
+}

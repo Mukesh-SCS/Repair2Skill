@@ -42,11 +42,12 @@ def main():
     ap.add_argument("--camera", action="store_true")
     ap.add_argument("--upload", type=str)
     ap.add_argument("--threshold", type=float, default=0.10)
+    ap.add_argument("--debug", action="store_true", help="Enable debug mode for detection")
     args = ap.parse_args()
 
     # ---- Stage 0: Data Gen / Training ----
     if args.generate_data:
-        SyntheticDataGenerator().generate_dataset(num_samples=args.samples)
+        SyntheticDataGenerator().generate_dataset(N=args.samples)
         return
 
     if args.train_frcnn:
@@ -75,7 +76,7 @@ def main():
     os.makedirs("outputs", exist_ok=True)
 
     # ---- Stage 2: Detection ----
-    stage1 = detect_damage_and_parts(image_path, weights=model_path, threshold=args.threshold)
+    stage1 = detect_damage_and_parts(image_path, weights=model_path, threshold=args.threshold, debug=args.debug)
     with open("outputs/stage1_parts.json", "w") as f:
         json.dump(stage1, f, indent=2)
 

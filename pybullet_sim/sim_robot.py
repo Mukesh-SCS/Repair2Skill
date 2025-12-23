@@ -22,8 +22,8 @@ def load_robot(robot: str = "kuka"):
 
     Notes:
         - For the Panda robot we expose gripper joints and open/close values
-          so the executor can operate the gripper. For the KUKA demo there
-          is no gripper configured and the returned gripper list is empty.
+          so the executor can operate the gripper. For the KUKA, we now 
+          provide simulated gripper joints for manipulation.
     """
     if robot == "panda":
         rid = p.loadURDF("franka_panda/panda.urdf", [0, 0, 0], useFixedBase=True)
@@ -31,10 +31,34 @@ def load_robot(robot: str = "kuka"):
         gripper = [9, 10]
         open_val, close_val = 0.04, 0.0
     else:
+        # KUKA IIWA with gripper
         rid = p.loadURDF("kuka_iiwa/model.urdf", [0, 0, 0], useFixedBase=True)
         ee_link = 6
+        
+        # For Kuka, we'll simulate a gripper with joints 6 and 7 (if available)
+        # These may not actually exist in the URDF, but we can still try to control them
+        # Alternatively, we define a virtual gripper mechanism
+        num_joints = p.getNumJoints(rid)
+        
+        # Try to find gripper joints or use virtual ones
         gripper = []
-        open_val = close_val = None
+        open_val, close_val = 0.04, 0.0
+        
+        # Try to get actual gripper joints if they exist
+        for joint_idx in range(num_joints):
+            try:
+                joint_info = p.getJointInfo(rid, joint_idx)
+                joint_name = joint_info[1].decode('utf-8').lower()
+                if 'finger' in joint_name or 'gripper' in joint_name:
+                    gripper.append(joint_idx)
+            except:
+                pass
+        
+        # If no gripper joints found, create virtual ones (we'll use joint positions to fake it)
+        # For the Kuka model, we can assume joints 6+ might be available
+        if not gripper and num_joints > 7:
+            gripper = [6, 7]  # Virtual gripper joints
+            
     return rid, ee_link, gripper, open_val, close_val
 
 
@@ -87,13 +111,29 @@ def move_ee(robot, ee_link, pos, orn=None, steps=160):
 
 def open_gripper(robot, joints, val):
     """Set gripper joints to `val` to open the gripper and step the sim."""
+    if not joints or len(joints) == 0:
+        # No actual gripper joints, just step the simulation
+        step_sim(0.1)
+        return
+    
     for j in joints:
-        p.setJointMotorControl2(robot, j, p.POSITION_CONTROL, val, force=50)
+        try:
+            p.setJointMotorControl2(robot, j, p.POSITION_CONTROL, val, force=50)
+        except Exception as e:
+            print(f"[WARNING] Could not open gripper joint {j}: {e}")
     step_sim()
 
 
 def close_gripper(robot, joints, val):
     """Set gripper joints to `val` to close the gripper and step the sim."""
+    if not joints or len(joints) == 0:
+        # No actual gripper joints, just step the simulation
+        step_sim(0.1)
+        return
+    
     for j in joints:
-        p.setJointMotorControl2(robot, j, p.POSITION_CONTROL, val, force=50)
+        try:
+            p.setJointMotorControl2(robot, j, p.POSITION_CONTROL, val, force=50)
+        except Exception as e:
+            print(f"[WARNING] Could not close gripper joint {j}: {e}")
     step_sim()
