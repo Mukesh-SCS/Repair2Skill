@@ -40,21 +40,69 @@ const upload = multer({ dest: UPLOAD_DIR });
 app.get('/sim-stream.jpg', (req, res) => {
   // Proxy to Python streaming server for direct frame access
   const http = require('http');
+  
+  // Check if simulation is running (optional check - don't block if check fails)
+  if (simProcess && simProcess.killed) {
+    // Simulation was killed, return placeholder
+    res.status(204).end();
+    return;
+  }
+  
   const options = {
     hostname: 'localhost',
     port: 8080,
     path: '/frame.jpg',
-    method: 'GET'
+    method: 'GET',
+    timeout: 2000 // 2 second timeout
   };
   
   const proxyReq = http.request(options, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    // Copy headers but ensure proper content type
+    const headers = { ...proxyRes.headers };
+    headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+    headers['Pragma'] = 'no-cache';
+    headers['Expires'] = '0';
+    
+    res.writeHead(proxyRes.statusCode, headers);
     proxyRes.pipe(res);
   });
   
   proxyReq.on('error', (e) => {
-    console.error(`[SERVER] Stream proxy error: ${e.message}`);
-    res.status(503).json({ error: 'Simulation stream not available' });
+    // Only log unexpected errors (not connection refused which is normal when server isn't running)
+    if (e.code !== 'ECONNREFUSED' && e.code !== 'ETIMEDOUT') {
+      console.error(`[SERVER] Stream proxy error: ${e.message}`);
+    }
+    
+    // Return a 1x1 transparent PNG instead of JSON (browsers expect image)
+    // This prevents broken image icons in the UI
+    const transparentPixel = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64'
+    );
+    res.writeHead(200, {
+      'Content-Type': 'image/png',
+      'Content-Length': transparentPixel.length,
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
+    res.end(transparentPixel);
+  });
+  
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    const transparentPixel = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64'
+    );
+    res.writeHead(200, {
+      'Content-Type': 'image/png',
+      'Content-Length': transparentPixel.length,
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
+    res.end(transparentPixel);
   });
   
   proxyReq.end();
@@ -328,16 +376,21 @@ app.post('/upload', upload.single('file'), (req, res) => {
   console.log(`[SERVER] Processing image: ${imagePath}`);
 
   /* ---- Stage 2: Damage Detection ---- */
+  // Use lower threshold and enable debug mode for better detection
   const detect = spawn(PYTHON, [
     `${ROOT}/scripts/detect_damage.py`,
     '--image', imagePath,
-    '--threshold', '0.05'
+    '--threshold', '0.05',  // Lower threshold for better detection
+    '--debug'  // Enable debug output to see what's being detected
   ], { cwd: ROOT });
 
   let detectOut = '';
   let detectErr = '';
 
-  detect.stdout.on('data', d => detectOut += d.toString());
+  detect.stdout.on('data', d => {
+    detectOut += d.toString();
+    console.log(`[DETECT] ${d.toString().trim()}`);
+  });
   detect.stderr.on('data', d => {
     detectErr += d.toString();
     console.error(`[DETECT ERROR] ${d.toString().trim()}`);
@@ -347,22 +400,87 @@ app.post('/upload', upload.single('file'), (req, res) => {
     if (code !== 0) {
       console.error(`[SERVER] Detection failed with code ${code}`);
       console.error(`[SERVER] Error output: ${detectErr}`);
-      return res.status(500).json({ error: `Detection failed: ${detectErr || 'Unknown error'}` });
+      console.error(`[SERVER] Stdout output: ${detectOut}`);
+      return res.status(500).json({ 
+        error: `Detection failed: ${detectErr || 'Unknown error'}`,
+        details: detectErr,
+        stdout: detectOut
+      });
     }
 
     let detection;
     try {
-      detection = JSON.parse(detectOut.trim());
+      // Debug output now goes to stderr, so stdout should only contain JSON
+      // But handle multi-line JSON (pretty-printed) by finding the JSON block
+      const trimmed = detectOut.trim();
+      
+      // Try to find JSON object (could be single line or multi-line)
+      let jsonStart = trimmed.indexOf('{');
+      if (jsonStart === -1) {
+        throw new Error('No JSON found in output');
+      }
+      
+      // Extract JSON from the first { to the last }
+      let jsonEnd = trimmed.lastIndexOf('}');
+      if (jsonEnd === -1 || jsonEnd < jsonStart) {
+        throw new Error('Invalid JSON format');
+      }
+      
+      const jsonStr = trimmed.substring(jsonStart, jsonEnd + 1);
+      detection = JSON.parse(jsonStr);
     } catch (e) {
       console.error(`[SERVER] Failed to parse detection output: ${e}`);
-      console.error(`[SERVER] Raw output: ${detectOut}`);
-      return res.status(500).json({ error: 'Failed to parse detection output', details: detectOut });
+      console.error(`[SERVER] Raw stdout: ${detectOut}`);
+      console.error(`[SERVER] Raw stderr: ${detectErr}`);
+      return res.status(500).json({ 
+        error: 'Failed to parse detection output', 
+        details: detectOut,
+        stderr: detectErr,
+        parseError: e.message
+      });
     }
 
-    const pair = detection.detected_pairs?.[0];
-    if (!pair) {
-      return res.status(400).json({ error: 'No damage detected in image' });
+    console.log(`[SERVER] Detection result:`, JSON.stringify(detection, null, 2));
+    
+    const pairs = detection.detected_pairs || [];
+    if (!pairs || pairs.length === 0) {
+      console.warn(`[SERVER] No damage detected. Detection result:`, detection);
+      return res.status(400).json({ 
+        error: 'No damage detected in image',
+        details: 'The model did not detect any damage. This could mean: 1) The image does not contain visible damage, 2) The model needs retraining, 3) Try a different image with more obvious damage.',
+        detection_result: detection
+      });
     }
+
+    // Use smart_score if available (from updated detection script), otherwise calculate it
+    const scoredPairs = pairs.map(pair => {
+      let score;
+      if (pair.smart_score !== undefined) {
+        // Use pre-calculated smart_score from detection script
+        score = parseFloat(pair.smart_score);
+      } else {
+        // Fallback: calculate score using same logic as visual guide
+        const overlap = pair.overlap_iou || 0.0;
+        const overlapBonus = overlap > 0.15 ? Math.max(0.5, overlap) : 0.3;
+        const partConf = parseFloat(pair.part_confidence || 0.0);
+        const damageConf = parseFloat(pair.damage_confidence || 0.0);
+        score = partConf * damageConf * overlapBonus;
+      }
+      return { ...pair, score };
+    });
+
+    // Sort by score (highest first) and pick the best one
+    scoredPairs.sort((a, b) => b.score - a.score);
+    const pair = scoredPairs[0];
+
+    console.log(`[SERVER] All detected pairs with scores:`, scoredPairs.map(p => ({
+      part: p.part,
+      damage: p.damage_type,
+      score: p.score.toFixed(4),
+      part_conf: p.part_confidence,
+      damage_conf: p.damage_confidence,
+      overlap: p.overlap_iou
+    })));
 
     const damagedPart = pair.part;
     const damageType = pair.damage_type;
@@ -453,6 +571,16 @@ app.post('/upload', upload.single('file'), (req, res) => {
               fs.mkdirSync(UPLOAD_DIR, { recursive: true });
             }
             
+            // Kill any previous simulation before starting a new one
+            if (simProcess) {
+              try {
+                simProcess.kill();
+                console.log('[SERVER] Killed previous simulation process');
+              } catch (e) {
+                console.error('[SERVER] Error killing previous sim process:', e);
+              }
+            }
+            
             // Save initial camera params
             fs.writeFileSync(cameraParamsPath, JSON.stringify(currentCamera));
             console.log(`[SERVER] Camera params saved to: ${cameraParamsPath}`);
@@ -467,7 +595,8 @@ app.post('/upload', upload.single('file'), (req, res) => {
             const absScreenshotPath = path.resolve(screenshotPath);
             const absCameraParamsPath = path.resolve(cameraParamsPath);
             
-            const autoSimProcess = spawn(PYTHON, [
+            // Use global simProcess to track and manage the simulation
+            simProcess = spawn(PYTHON, [
               `${ROOT}/pybullet_sim/run_simulation.py`,
               '--plan', absPlanPath,
               '--damaged-part', damagedPart,
@@ -481,18 +610,19 @@ app.post('/upload', upload.single('file'), (req, res) => {
               stdio: ['ignore', 'pipe', 'pipe']
             });
 
-            let autoSimOutput = '';
-            autoSimProcess.stdout.on('data', (data) => {
-              autoSimOutput += data.toString();
+            let simOutput = '';
+            simProcess.stdout.on('data', (data) => {
+              simOutput += data.toString();
               console.log(`[AUTO-SIM] ${data.toString().trim()}`);
             });
 
-            autoSimProcess.stderr.on('data', (data) => {
+            simProcess.stderr.on('data', (data) => {
               console.error(`[AUTO-SIM ERROR] ${data.toString().trim()}`);
             });
 
-            autoSimProcess.on('close', (code) => {
+            simProcess.on('close', (code) => {
               console.log(`[SERVER] Auto-simulation process exited with code ${code}`);
+              simProcess = null; // Clear the process reference
             });
 
             // Return response with all data

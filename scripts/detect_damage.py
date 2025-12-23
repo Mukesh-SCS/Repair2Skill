@@ -26,12 +26,26 @@ def build_model_for_inference(weights_path, device):
     # Load the trained weights
     state = torch.load(weights_path, map_location=device)
     
+    # Check if state dict is from WeightedLossModel wrapper
+    if isinstance(state, dict):
+        # If it's a checkpoint dict with 'model_state' key
+        if 'model_state' in state:
+            state_dict = state['model_state']
+        else:
+            state_dict = state
+        
+        # Remove 'model.' prefix if present (from WeightedLossModel wrapper)
+        if any(k.startswith('model.') for k in state_dict.keys()):
+            state_dict = {k.replace('model.', ''): v for k, v in state_dict.items() if k.startswith('model.')}
+    else:
+        state_dict = state
+    
     try:
         # Try strict loading first
-        model.load_state_dict(state, strict=True)
+        model.load_state_dict(state_dict, strict=True)
     except RuntimeError as e:
         # If strict loading fails, try with strict=False and handle mismatches
-        missing_keys, unexpected_keys = model.load_state_dict(state, strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
         
         if missing_keys:
             print(f"[WARNING] Missing keys in checkpoint: {len(missing_keys)}", file=sys.stderr)
@@ -48,9 +62,14 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = build_model_for_inference(weights, device)
 
+    # Add normalization to match training preprocessing
     tf = transforms.Compose([
         transforms.Resize((320, 320)),
-        transforms.ToTensor()
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
     ])
 
     img = Image.open(image_path).convert("RGB")
@@ -70,11 +89,9 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
     damages = []
 
     # Use separate thresholds for parts and damages
-    # Adaptive thresholds based on user input
-    part_threshold = max(0.05, float(threshold))
-    # After proper training, damage threshold should be higher
-    # Start conservative for backward compatibility with undertrained models
-    damage_threshold = max(0.01, float(threshold) * 0.5)  # 50% of part threshold
+    # Lower minimum thresholds to allow more detections, especially for undertrained models
+    part_threshold = max(0.05, float(threshold))  # Lowered from 0.10 to allow more detections
+    damage_threshold = max(0.03, float(threshold) * 0.6)  # Lowered from 0.08, now 60% of part threshold
 
     for box, score, label in zip(boxes, scores, labels):
         cls_name = CLASSES[int(label)]
@@ -87,11 +104,11 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
                 damages.append((cls_name, box, float(score)))
 
     if debug:
-        print(f"[DEBUG] total kept boxes: {len(boxes)}")
+        print(f"[DEBUG] total kept boxes: {len(boxes)}", file=sys.stderr)
         for cls_name, box, sc in parts:
-            print(f"[DEBUG] PART  {cls_name:16s} score={sc:.3f} box={box}")
+            print(f"[DEBUG] PART  {cls_name:16s} score={sc:.3f} box={box}", file=sys.stderr)
         for cls_name, box, sc in damages:
-            print(f"[DEBUG] DAMAGE {cls_name:16s} score={sc:.3f} box={box}")
+            print(f"[DEBUG] DAMAGE {cls_name:16s} score={sc:.3f} box={box}", file=sys.stderr)
 
     # Pair logic: containment of damage inside part, but relaxed
     detected_pairs = []
@@ -126,19 +143,25 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
             coverage = intersection_area / d_area
 
             # Relaxed coverage threshold so imperfect boxes still pair
-            if coverage > 0.15 and coverage > best_coverage:
+            # Lowered from 0.15 to 0.10 to allow more pairings
+            if coverage > 0.10 and coverage > best_coverage:
                 best_coverage = coverage
                 best_dmg = (d_name, d_conf)
                 best_dmg_idx = i
 
         if best_dmg is not None:
             dmg_name, dmg_conf = best_dmg
+            # Calculate smart score for better pair selection
+            overlap_bonus = max(0.5, best_coverage) if best_coverage > 0.15 else 0.3
+            smart_score = float(p_conf) * float(dmg_conf) * overlap_bonus
+            
             detected_pairs.append({
                 "part": p_name,
                 "part_confidence": float(p_conf),
                 "damage_type": dmg_name,
                 "damage_confidence": float(dmg_conf),
-                "overlap_iou": float(best_coverage)
+                "overlap_iou": float(best_coverage),
+                "smart_score": smart_score  # Add smart score for better selection
             })
             used_damages.add(best_dmg_idx)
 
@@ -146,7 +169,7 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
     # assign each damage to the nearest part by center distance.
     if not detected_pairs and damages and parts:
         if debug:
-            print("[DEBUG] No pairs from coverage; using nearest-part fallback.")
+            print("[DEBUG] No pairs from coverage; using nearest-part fallback.", file=sys.stderr)
         for d_name, d_box, d_conf in damages:
             dx = 0.5 * (d_box[0] + d_box[2])
             dy = 0.5 * (d_box[1] + d_box[3])
@@ -163,16 +186,19 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
 
             if best_p is not None:
                 p_name, p_conf = best_p
+                # Calculate smart score for fallback pairs too
+                smart_score = float(p_conf) * float(d_conf) * 0.3  # Lower bonus for fallback
                 detected_pairs.append({
                     "part": p_name,
                     "part_confidence": float(p_conf),
                     "damage_type": d_name,
                     "damage_confidence": float(d_conf),
-                    "overlap_iou": 0.0
+                    "overlap_iou": 0.0,
+                    "smart_score": smart_score
                 })
 
     if debug:
-        print(f"[DEBUG] detected_pairs: {json.dumps(detected_pairs, indent=2)}")
+        print(f"[DEBUG] detected_pairs: {json.dumps(detected_pairs, indent=2)}", file=sys.stderr)
 
     # If no pairs detected but we have parts, it means the model isn't detecting damages
     if not detected_pairs and parts:

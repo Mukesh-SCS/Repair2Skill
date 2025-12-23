@@ -92,8 +92,10 @@ class StreamingServer(socketserver.TCPServer):
     def get_frame(self):
         """Get current frame from PyBullet and return as JPEG bytes."""
         try:
+            # Check connection with retry - PyBullet might be busy executing steps
             if not p.isConnected():
-                return None
+                # Return a placeholder frame instead of None to keep stream alive
+                return self._get_placeholder_frame()
                 
             # Update camera params
             self.update_camera_params()
@@ -124,13 +126,18 @@ class StreamingServer(socketserver.TCPServer):
                 farVal=100.0
             )
             
-            # Get camera image
-            img = p.getCameraImage(
-                width=self.width,
-                height=self.height,
-                viewMatrix=view_matrix,
-                projectionMatrix=projection_matrix
-            )
+            # Get camera image - wrap in try/except to handle busy states
+            try:
+                img = p.getCameraImage(
+                    width=self.width,
+                    height=self.height,
+                    viewMatrix=view_matrix,
+                    projectionMatrix=projection_matrix
+                )
+            except Exception as e:
+                # PyBullet might be busy executing steps, return placeholder
+                print(f"[STREAM] PyBullet busy, using placeholder: {e}")
+                return self._get_placeholder_frame()
             
             # Convert to JPEG
             rgba = img[2]  # rgbPixels
@@ -145,7 +152,16 @@ class StreamingServer(socketserver.TCPServer):
             
         except Exception as e:
             print(f"[STREAM] Error getting frame: {e}")
-            return None
+            # Return placeholder instead of None to keep stream alive
+            return self._get_placeholder_frame()
+    
+    def _get_placeholder_frame(self):
+        """Generate a placeholder frame when PyBullet is busy or disconnected."""
+        # Create a simple gray placeholder image
+        placeholder = Image.new('RGB', (self.width, self.height), color=(128, 128, 128))
+        buf = io.BytesIO()
+        placeholder.save(buf, format='JPEG', quality=85)
+        return buf.getvalue()
 
 
 def start_streaming_server(port=8080, camera_params_file=None):

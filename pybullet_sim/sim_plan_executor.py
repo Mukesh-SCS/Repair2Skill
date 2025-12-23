@@ -339,7 +339,7 @@ def execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, orig
     - "remove": Pick up the damaged part with gripper and place in drop zone
     - "replace": Spawn a new replacement part and pick it up
     - "attach": Pick up the replacement and move it back to original position
-    - "inspect", "tighten", "fix": Show working animation
+    - "inspect", "tighten", Show working animation
     """
     
     # Handle different JSON keys (GPT sometimes uses 'type', 'action_type', or 'action')

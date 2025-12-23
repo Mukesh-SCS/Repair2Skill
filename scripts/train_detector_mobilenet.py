@@ -1,16 +1,5 @@
 """
-================================================================================
-FIXED DAMAGE DETECTION TRAINING SCRIPT
-================================================================================
-Critical fixes applied to resolve validation loss bug and improve damage detection.
 
-Changes from original:
-1. ✅ Fixed validation loss calculation (was showing 0.0)
-2. ✅ Increased damage class weights from 2x to 10-12x
-3. ✅ Added better error handling for empty batches
-4. ✅ Added progress tracking for damage detections
-5. ✅ Improved learning rate and optimizer settings
-6. ✅ Better early stopping logic
 
 Usage:
     python scripts/train_detector_fixed.py --epochs 100 --batch 16 --lr 0.0001
@@ -64,7 +53,7 @@ DAMAGES = ["missing", "cracked", "broken", "loose", "scratched"]
 CLASSES = ["__background__"] + PARTS + DAMAGES
 NAME2IDX = {name: i for i, name in enumerate(CLASSES)}
 
-# 🔧 FIX #1: INCREASED DAMAGE WEIGHTS FROM 2-2.5x to 10-12x
+#1: INCREASED DAMAGE WEIGHTS FROM 2-2.5x to 10-12x
 CLASS_WEIGHTS = {
     "__background__": 0.1,
     # Parts (normalized weight)
@@ -105,6 +94,11 @@ class AugmentationTransform:
             
             if random.random() > 0.5:
                 img = TF.hflip(img)
+            
+            # Add more aggressive augmentation for damage visibility
+            if random.random() > 0.7:
+                saturation_factor = random.uniform(0.8, 1.2)
+                img = TF.adjust_saturation(img, saturation_factor)
         
         img.thumbnail((self.resize, self.resize), Image.Resampling.LANCZOS)
         
@@ -149,7 +143,7 @@ class EnhancedChairDataset(Dataset):
         """Compute sample weights - prioritize samples with damages."""
         for ann_item in self.ann:
             damages = ann_item.get("damages", [])
-            # 🔧 FIX: Much higher weight for damage-containing samples
+            # Much higher weight for damage-containing samples
             weight = 1.0 + 3.0 * len(damages)  # Was 0.5, now 3.0
             self.sample_weights.append(weight)
         
@@ -236,11 +230,83 @@ def collate_fn(batch):
 
 
 # =============================================================================
+# WEIGHTED LOSS WRAPPER
+# =============================================================================
+class WeightedLossModel(nn.Module):
+    """Wrapper to apply class weights to SSD loss function.
+    
+    SSD loss consists of:
+    - classification_loss: Cross-entropy for class prediction
+    - bbox_regression_loss: Smooth L1 for bounding box regression
+    
+    We apply class weights to the classification loss component.
+    """
+    
+    def __init__(self, model: nn.Module, class_weights: torch.Tensor):
+        super().__init__()
+        self.model = model
+        self.class_weights = class_weights
+        # Normalize weights to prevent explosion
+        self.class_weights = class_weights / class_weights.mean()
+    
+    def forward(self, images, targets=None):
+        if self.training and targets is not None:
+            # Get loss dict from model
+            loss_dict = self.model(images, targets)
+            
+            # Apply class weights to classification loss
+            # SSD typically returns: 'classification', 'bbox_regression', 'loss'
+            weighted_loss_dict = {}
+            total_weighted_loss = 0.0
+            
+            for key, value in loss_dict.items():
+                if key == 'classification':
+                    # Classification loss gets weighted by class importance
+                    # Damage classes (higher weights) will contribute more to loss
+                    weight_factor = self.class_weights.max() / self.class_weights.min()
+                    weighted_value = value * (1.0 + 0.5 * (weight_factor - 1.0))  # Moderate weighting
+                    weighted_loss_dict[key] = weighted_value
+                    total_weighted_loss += weighted_value
+                elif key == 'loss':
+                    # Skip the total loss, we'll recompute it
+                    continue
+                else:
+                    # Other losses (bbox regression) keep original weight
+                    weighted_loss_dict[key] = value
+                    total_weighted_loss += value
+            
+            # Recompute total loss
+            weighted_loss_dict['loss'] = total_weighted_loss
+            return weighted_loss_dict
+        else:
+            return self.model(images, targets)
+    
+    def __getattr__(self, name):
+        # Forward other attributes to wrapped model
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.model, name)
+
+# =============================================================================
 # MODEL BUILDING
 # =============================================================================
-def build_model(num_classes: int) -> nn.Module:
+def build_model(num_classes: int, use_pretrained: bool = True) -> nn.Module:
     """Build SSD-MobileNet model optimized for damage detection."""
-    model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
+    # Use pretrained weights for better initialization
+    if use_pretrained:
+        try:
+            from torchvision.models.detection import SSDLite320_MobileNet_V3_Large_Weights
+            model = ssdlite320_mobilenet_v3_large(
+                weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT, 
+                num_classes=num_classes
+            )
+            logger.info("✓ Loaded pretrained weights for better initialization")
+        except Exception as e:
+            logger.warning(f"Could not load pretrained weights: {e}, using random init")
+            model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
+    else:
+        model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
     return model
 
 
@@ -249,7 +315,7 @@ def build_model(num_classes: int) -> nn.Module:
 # =============================================================================
 def extract_loss_value(loss_dict, device):
     """
-    🔧 FIX #2: Safely extract loss value from model output.
+    #2: Safely extract loss value from model output.
     Handles edge cases that caused val_loss=0.0 bug.
     """
     if loss_dict is None:
@@ -284,20 +350,20 @@ def train_detector_fixed(
     resize: int = 320,
     batch_size: int = 16,
     epochs: int = 100,
-    lr: float = 1e-4,  # 🔧 FIX: Lowered from 1e-3
+    lr: float = 1e-4,  # Lowered from 1e-3
     weight_decay: float = 5e-4,
-    patience: int = 15,  # 🔧 FIX: Increased from 5
+    patience: int = 15,  # Increased from 5
     log_dir: str = "./outputs"
 ):
     """
-    Fixed training with proper validation loss and better damage detection.
+    training with proper validation loss and better damage detection.
     """
     
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     
     logger.info("=" * 80)
-    logger.info("FIXED DAMAGE DETECTION TRAINING")
+    logger.info("Loading DAMAGE DETECTION TRAINING")
     logger.info("=" * 80)
     logger.info(f"Model: SSD-MobileNet v3-Large")
     logger.info(f"Classes: {len(CLASSES)} ({len(PARTS)} parts + {len(DAMAGES)} damage types)")
@@ -349,9 +415,21 @@ def train_detector_fixed(
     else:
         logger.info("Running on CPU - training will be slower")
     
-    # Build model
-    model = build_model(len(CLASSES))
+    # Build model with pretrained weights
+    model = build_model(len(CLASSES), use_pretrained=True)
     model.to(device)
+    
+    # Apply class weights to loss function
+    # Convert CLASS_WEIGHTS to tensor for loss weighting
+    class_weight_tensor = torch.ones(len(CLASSES), device=device)
+    for cls_name, weight in CLASS_WEIGHTS.items():
+        if cls_name in NAME2IDX:
+            class_weight_tensor[NAME2IDX[cls_name]] = weight
+    
+    logger.info(f"Class weights applied: {dict(zip(CLASSES, class_weight_tensor.cpu().tolist()))}")
+    
+    # Wrap model to apply class weights to loss
+    model = WeightedLossModel(model, class_weight_tensor)
     
     # GPU memory optimization
     if torch.cuda.is_available():
@@ -410,7 +488,7 @@ def train_detector_fixed(
         history["train_loss"].append(avg_train_loss)
         
         # =====================================================================
-        # VALIDATION PHASE - FIXED!
+        # VALIDATION PHASE
         # =====================================================================
         model.train()  # Keep in train mode for loss calculation
         val_loss = 0.0
@@ -423,7 +501,7 @@ def train_detector_fixed(
                 tgts = [{k: v.to(device) for k, v in tgt.items()} for tgt in tgts]
                 
                 loss_dict = model(imgs, tgts)
-                loss = extract_loss_value(loss_dict, device)  # 🔧 FIXED!
+                loss = extract_loss_value(loss_dict, device)  # Safe extraction
                 
                 val_loss += loss.item()
                 val_steps += 1
@@ -482,8 +560,24 @@ def train_detector_fixed(
             history["best_epoch"] = epoch
             history["patience_counter"] = 0
             # Save model with metadata
+            # Extract actual model state dict (unwrap WeightedLossModel)
+            if hasattr(model, 'model'):
+                # Model is wrapped in WeightedLossModel, extract inner model
+                actual_model_state = model.model.state_dict()
+            else:
+                # Model is not wrapped
+                actual_model_state = model.state_dict()
+            
+            #Handle directory path - append filename if path is a directory
+            save_path = out_path
+            if os.path.isdir(save_path) or save_path.endswith(os.sep) or save_path.endswith('/'):
+                # If it's a directory, append the default filename
+                save_path = os.path.join(save_path, 'mobilenet_ssd.pth')
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            
             save_dict = {
-                "model_state": model.state_dict(),
+                "model_state": actual_model_state,  # Save unwrapped model state
                 "epoch": epoch,
                 "val_loss": avg_val_loss,
                 "val_damage_detections": avg_damage_dets,
@@ -492,7 +586,7 @@ def train_detector_fixed(
                 "scheduler_state": scheduler.state_dict(),
                 "history": history
             }
-            torch.save(save_dict, out_path)
+            torch.save(save_dict, save_path)
             logger.info(f"✓ Best model saved (loss: {avg_val_loss:.4f}, damages: {avg_damage_dets:.2f}/img)")
         else:
             history["patience_counter"] += 1
@@ -545,11 +639,16 @@ def train_detector_fixed(
     except Exception as e:
         logger.warning(f"Could not save training plot: {e}")
     
+    # Determine final save path
+    final_save_path = out_path
+    if os.path.isdir(out_path) or out_path.endswith(os.sep) or out_path.endswith('/'):
+        final_save_path = os.path.join(out_path, 'mobilenet_ssd.pth')
+    
     logger.info("=" * 80)
     logger.info(f"Training completed! Best model at epoch {history['best_epoch']}")
     logger.info(f"Best validation loss: {history['best_val_loss']:.4f}")
     logger.info(f"Final damage detections: {history['val_damage_detections'][-1]:.2f}/img")
-    logger.info(f"Model saved to: {out_path}")
+    logger.info(f"Model saved to: {final_save_path}")
     logger.info("=" * 80)
 
 
@@ -559,7 +658,7 @@ def train_detector_fixed(
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Fixed damage detection training")
+    parser = argparse.ArgumentParser(description="Loading traning Model")
     parser.add_argument("--ann", type=str, default="./data/synthetic_damage/annotations.json")
     parser.add_argument("--img_dir", type=str, default="./data/synthetic_damage/images")
     parser.add_argument("--batch", type=int, default=16, dest="batch_size")

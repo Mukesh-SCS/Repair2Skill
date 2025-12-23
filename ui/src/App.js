@@ -67,33 +67,8 @@ function App() {
     return () => clearTimeout(timer);
   }, [cameraDist, cameraYaw, cameraPitch, updateCamera]);
 
-  // Note: Simulation now auto-starts after upload, so this function is no longer needed
-  // Keeping it for potential manual restart functionality
-
-  // Auto-start simulation when UI loads
-  useEffect(() => {
-    // Start simulation automatically on component mount
-    const startDefaultSim = async () => {
-      try {
-        const res = await fetch('/start-default-sim', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            camera: { dist: cameraDist, yaw: cameraYaw, pitch: cameraPitch }
-          })
-        });
-        if (res.ok) {
-          setShowStream(true);
-          setSimReady(true);
-          console.log('Default simulation started');
-        }
-      } catch (error) {
-        console.error('Error starting default simulation:', error);
-      }
-    };
-    
-    startDefaultSim();
-  }, []); // Run once on mount
+  // Note: Simulation now auto-starts after upload via the /upload endpoint
+  // Removed auto-start on mount - simulation should only start after user uploads image
 
   // Live polling for simulation image - faster for real-time streaming
   useEffect(() => {

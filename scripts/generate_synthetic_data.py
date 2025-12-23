@@ -190,7 +190,7 @@ class EnhancedSyntheticDataGenerator:
     # DAMAGE RENDERING
     # =====================================================================
     
-    def _sample_subbox(self, box: List, scale_range: Tuple = (0.6, 0.95)) -> List:
+    def _sample_subbox(self, box: List, scale_range: Tuple = (0.4, 0.85)) -> List:
         """Sample a damage box within a part boundary - LARGER for better detection."""
         x1, y1, x2, y2 = box
         w, h = x2 - x1, y2 - y1
@@ -198,9 +198,15 @@ class EnhancedSyntheticDataGenerator:
         if w < 5 or h < 5:
             return box  # Part too small
         
-        # Use larger scale range to make damages more visible
+        #Use larger scale range (40-85% of part size) to make damages more visible
+        # This ensures damages are large enough to be detected
         sw = random.uniform(*scale_range)
         sh = random.uniform(*scale_range)
+        
+        # Ensure minimum damage size (at least 20x20 pixels)
+        min_w, min_h = max(20, w * 0.3), max(20, h * 0.3)
+        sw = max(sw, min_w / w) if w > 0 else sw
+        sh = max(sh, min_h / h) if h > 0 else sh
         
         bw, bh = w * sw, h * sh
         sx = random.uniform(x1, max(x1 + 1, x2 - bw))
@@ -457,8 +463,8 @@ class EnhancedSyntheticDataGenerator:
         with open(ann_path, "w") as f:
             json.dump(annotations, f, indent=2)
         
-        print(f"✓ Saved {N} images to {images_dir}/")
-        print(f"✓ Saved annotations to {ann_path}")
+        print(f"[OK] Saved {N} images to {images_dir}/")
+        print(f"[OK] Saved annotations to {ann_path}")
         
         # Save statistics
         stats_path = os.path.join(self.output_dir, "stats.json")
@@ -466,7 +472,7 @@ class EnhancedSyntheticDataGenerator:
             json.dump(self.stats, f, indent=2)
         
         self._print_statistics()
-        print(f"✓ Saved statistics to {stats_path}")
+        print(f"[OK] Saved statistics to {stats_path}")
         # Save a grid of sample images for inspection
         try:
             import math
@@ -482,7 +488,7 @@ class EnhancedSyntheticDataGenerator:
                     y = (i // grid_cols) * H
                     grid_img.paste(img_sample, (x, y))
             grid_img.save(os.path.join(self.output_dir, "sample_grid.jpg"), quality=95)
-            print("✓ Saved sample grid to sample_grid.jpg")
+            print("[OK] Saved sample grid to sample_grid.jpg")
         except Exception as e:
             print(f"[WARN] Could not save sample grid: {e}")
     
