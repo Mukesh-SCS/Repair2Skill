@@ -2,7 +2,7 @@
 
 
 Usage:
-    python scripts/train_detector_fixed.py --epochs 100 --batch 16 --lr 0.0001
+    
 
 ================================================================================
 """
@@ -399,7 +399,7 @@ def extract_loss_value(loss_dict, device):
 # =============================================================================
 # TRAINING LOOP
 # =============================================================================
-def train_detector_fixed(
+def train_detector(
     ann_path: str,
     img_dir: str,
     out_path: str = "./models/damage_detection/mobilenet_ssd.pth",
@@ -651,13 +651,13 @@ def train_detector_fixed(
                 break
     
     # Save training history
-    history_path = os.path.join(log_dir, "training_logs_fixed.json")
+    history_path = os.path.join(log_dir, "training_logs.json")
     with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
     logger.info(f"Training logs saved to {history_path}")
     
     # Plot training curves
-    plot_path = os.path.join(log_dir, "training_curve_fixed.png")
+    plot_path = os.path.join(log_dir, "training_curve.png")
     try:
         plt.figure(figsize=(15, 5))
         
@@ -728,7 +728,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    train_detector_fixed(
+    train_detector(
         ann_path=args.ann,
         img_dir=args.img_dir,
         out_path=args.out,
