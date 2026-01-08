@@ -18,9 +18,10 @@ from sim_robot import load_robot
 from sim_scene import spawn_simple_chair
 from sim_plan_executor import load_json, execute_step
 try:
-    from stream_server import start_streaming_server
+    from stream_server import start_streaming_server, capture_frame
 except ImportError:
     start_streaming_server = None
+    capture_frame = None
     print("[WARN] stream_server not available, using legacy screenshot mode", flush=True)
 
 
@@ -117,6 +118,22 @@ def main():
             stream_server = start_streaming_server(args.stream_port, camera_params_path)
             print(f"[INFO] Direct frame streaming enabled on port {args.stream_port}", flush=True)
             print(f"[INFO] Access stream at: http://localhost:{args.stream_port}/frame.jpg", flush=True)
+            
+            # Set up frame callback so frames are captured during repair execution
+            # This allows the UI to see robot movement during repairs
+            if capture_frame:
+                from sim_connection import set_frame_callback
+                
+                def update_stream_frame():
+                    """Callback to update stream frame during simulation steps."""
+                    stream_server.update_camera_params()
+                    frame_bytes = capture_frame(stream_server.camera_params)
+                    if frame_bytes:
+                        stream_server.frame_buffer.set_frame(frame_bytes)
+                
+                set_frame_callback(update_stream_frame)
+                print("[INFO] Frame callback set for live streaming during repairs", flush=True)
+            
         except Exception as e:
             print(f"[WARN] Failed to start streaming server: {e}", flush=True)
             print(f"[INFO] Falling back to legacy screenshot mode", flush=True)
@@ -189,34 +206,94 @@ def main():
         print(f"[INFO] Stream available at: http://localhost:{args.stream_port}/frame.jpg")
         try:
             # Keep the simulation alive - streaming server handles frames
+            # Use non-blocking loop with proper exception handling
             import pybullet as p
-            while True:
-                p.stepSimulation()
-                time.sleep(1.0 / 240)  # 240 Hz physics update rate
+            import signal
+            import sys
+            
+            # Flag for graceful shutdown
+            running = True
+            
+            def signal_handler(sig, frame):
+                nonlocal running
+                print("\n[INFO] Received shutdown signal, cleaning up...")
+                running = False
+            
+            # Register signal handlers for graceful shutdown
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+            
+            frame_count = 0
+            while running and p.isConnected():
+                try:
+                    p.stepSimulation()
+                    frame_count += 1
+                    
+                    # Capture frame from main thread (PyBullet is NOT thread-safe!)
+                    # Update camera params from file and capture at ~30 FPS
+                    if frame_count % 2 == 0 and capture_frame:
+                        stream_server.update_camera_params()
+                        frame_bytes = capture_frame(stream_server.camera_params)
+                        if frame_bytes:
+                            stream_server.frame_buffer.set_frame(frame_bytes)
+                    
+                    # 60 Hz simulation rate
+                    time.sleep(1.0 / 60)
+                    
+                    # Periodic status update (every 10 seconds)
+                    if frame_count % 600 == 0:
+                        print(f"[INFO] Simulation running... (frame {frame_count})", flush=True)
+                    
+                except Exception as e:
+                    print(f"[WARN] Simulation step error: {e}")
+                    time.sleep(0.1)  # Brief pause on error
+                    
         except KeyboardInterrupt:
             print("[INFO] Simulation stopped by user.")
-            stream_server.shutdown()
-            import pybullet as p
-            p.disconnect()
+        finally:
+            # Cleanup
+            print("[INFO] Cleaning up simulation...")
+            try:
+                if stream_server:
+                    stream_server.shutdown()
+            except:
+                pass
+            try:
+                import pybullet as p
+                if p.isConnected():
+                    p.disconnect()
+            except:
+                pass
+            print("[INFO] Simulation cleanup complete.")
     elif screenshot_path:
-        # Legacy screenshot mode
+        # Legacy screenshot mode (file-based, not streaming)
         print("[INFO] Legacy screenshot mode active.")
         try:
             import pybullet as p
-            while True:
+            while p.isConnected():
                 p.stepSimulation()
-                time.sleep(1.0 / 240)
+                time.sleep(1.0 / 60)
         except KeyboardInterrupt:
             print("[INFO] Simulation stopped by user.")
-            import pybullet as p
-            p.disconnect()
+        finally:
+            try:
+                import pybullet as p
+                if p.isConnected():
+                    p.disconnect()
+            except:
+                pass
     else:
-        # If no streaming, just keep window open if GUI mode
+        # No streaming, no screenshots - just keep window open if GUI
         if args.gui:
             keep_window_open()
         else:
-            import pybullet as p
-            p.disconnect()
+            print("[INFO] Headless mode without streaming. Simulation complete.")
+            try:
+                import pybullet as p
+                if p.isConnected():
+                    p.disconnect()
+            except:
+                pass
 
 
 if __name__ == "__main__":

@@ -41,21 +41,23 @@ def render_step_visual(model_path, highlighted_part_idx, save_path,
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))
 
-    # Correct front-facing layout (matching real chair proportions)
+    # Chair parts layout matching the 8 detectable parts:
+    # seat, back, front_left_leg, front_right_leg, 
+    # back_left_leg, back_right_leg, armrest_left, armrest_right
+    # NOTE: "cushion" removed as it's not a detectable class
     chair_parts = {
         "seat": {"coords": [3.0, 5.0, 7.0, 6.0], "color": "lightblue"},
-        "cushion": {"coords": [3.5, 6.0, 6.5, 6.6], "color": "lightgrey"},
         "back": {"coords": [3.0, 6.6, 7.0, 7.8], "color": "lightgreen"},
     
-        # Legs positioned vertically below the seat — same y range for all (downward)
-        "front_left_leg": {"coords": [3.0, 2.0, 3.5, 5.0], "color": "orange"},
-        "back_left_leg": {"coords": [3.6, 2.0, 4.1, 5.0], "color": "orange"},
-        "front_right_leg": {"coords": [6.0, 2.0, 6.5, 5.0], "color": "orange"},
-        "back_right_leg": {"coords": [6.6, 2.0, 7.1, 5.0], "color": "orange"},
+        # Legs positioned vertically below the seat
+        "front_left_leg": {"coords": [3.0, 2.0, 3.5, 5.0], "color": "peru"},
+        "front_right_leg": {"coords": [6.5, 2.0, 7.0, 5.0], "color": "peru"},
+        "back_left_leg": {"coords": [3.6, 2.0, 4.1, 5.0], "color": "sienna"},
+        "back_right_leg": {"coords": [5.9, 2.0, 6.4, 5.0], "color": "sienna"},
     
-        # Armrests above seat
-        "armrest_left": {"coords": [2.5, 6.6, 3.0, 7.0], "color": "yellow"},
-        "armrest_right": {"coords": [7.0, 6.6, 7.5, 7.0], "color": "yellow"},
+        # Armrests on the sides
+        "armrest_left": {"coords": [2.5, 5.5, 3.0, 7.0], "color": "khaki"},
+        "armrest_right": {"coords": [7.0, 5.5, 7.5, 7.0], "color": "khaki"},
     }
 
 

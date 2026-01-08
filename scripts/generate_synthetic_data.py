@@ -491,22 +491,54 @@ class EnhancedSyntheticDataGenerator:
             print("[OK] Saved sample grid to sample_grid.jpg")
         except Exception as e:
             print(f"[WARN] Could not save sample grid: {e}")
+        
+        # Generate negative samples (images without damage) for better training
+        # This helps the model learn what undamaged chairs look like
+        self.generate_negative_samples(max(100, N // 10), annotations)
     
-        def generate_negative_samples(self, N: int = 200):
-            """Generate images with no damage for negative samples."""
-            images_dir = os.path.join(self.output_dir, "images")
-            W, H = 640, 480
-            for idx in range(N):
-                bg = self._generate_background(W, H)
-                img = bg
-                draw = ImageDraw.Draw(img)
-                parts = self._canonical_parts(W, H)
-                parts = self._apply_transform(parts, W, H)
-                for part_name, (x1, y1, x2, y2) in parts.items():
-                    color = self.part_colors[part_name]
-                    draw.rectangle([x1, y1, x2, y2], fill=color, outline="black", width=2)
-                fname = f"negative_{idx:05d}.jpg"
-                img.save(os.path.join(images_dir, fname), quality=95)
+    def generate_negative_samples(self, N: int = 200, annotations: list = None):
+        """Generate images with no damage for negative samples.
+        
+        These images show undamaged chairs, helping the model learn to 
+        distinguish between damaged and undamaged parts.
+        
+        Args:
+            N: Number of negative samples to generate
+            annotations: Existing annotations list to append to
+        """
+        if annotations is None:
+            annotations = []
+        
+        images_dir = os.path.join(self.output_dir, "images")
+        W, H = 640, 480
+        
+        print(f"Generating {N} negative samples (no damage)...")
+        for idx in range(N):
+            bg = self._generate_background(W, H)
+            img = bg
+            draw = ImageDraw.Draw(img)
+            parts = self._canonical_parts(W, H)
+            parts = self._apply_transform(parts, W, H)
+            for part_name, (x1, y1, x2, y2) in parts.items():
+                color = self.part_colors[part_name]
+                draw.rectangle([x1, y1, x2, y2], fill=color, outline="black", width=2)
+            fname = f"negative_{idx:05d}.jpg"
+            img.save(os.path.join(images_dir, fname), quality=95)
+            
+            # Add annotation with parts but NO damages
+            annotations.append({
+                "filename": fname,
+                "width": W,
+                "height": H,
+                "parts": parts,
+                "damages": []  # No damage in negative samples
+            })
+        
+        # Re-save annotations with negative samples included
+        ann_path = os.path.join(self.output_dir, "annotations.json")
+        with open(ann_path, "w") as f:
+            json.dump(annotations, f, indent=2)
+        print(f"[OK] Added {N} negative samples to annotations")
     
     def _print_statistics(self):
         """Print generation statistics."""

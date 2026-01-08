@@ -13,25 +13,48 @@ model:
   input_size: [320, 320]
 
   # Whether to start from pretrained weights (DEFAULT = COCO/ImageNet)
+  # The backbone will use pretrained weights, but the head will be
+  # randomly initialized for our custom classes
   weights: DEFAULT
 
   # Number of classes:
-  # 1 Background + 8 Parts (seat, legs, etc.) + 5 Damages (missing, etc.)
-  # Total = 14
+  # 1 Background + 8 Parts + 5 Damages = 14
+  # Parts: seat, back, front_left_leg, front_right_leg, 
+  #        back_left_leg, back_right_leg, armrest_left, armrest_right
+  # Damages: missing, cracked, broken, loose, scratched
   num_classes: 14
 
 train:
   # Batch size (Increase to 32 if GPU memory allows, decrease to 8 if OOM)
   batch_size: 16
 
-  # Number of training epochs (Recommended 30+ for synthetic data convergence)
-  epochs: 30
+  # Number of training epochs (Recommended 50+ for synthetic data convergence)
+  # More epochs needed due to class imbalance between parts and damages
+  epochs: 50
 
-  # Learning rate for Adam optimizer (as defined in train_detector_mobilenet.py)
+  # Learning rate for Adam optimizer
+  # Lower LR (1e-4) helps with transfer learning from pretrained backbone
   learning_rate: 0.0001
 
   # Optimizer type used in training script
   optimizer: adam
 
+  # Weight decay for regularization
+  weight_decay: 0.0005
+
+  # Early stopping patience
+  patience: 15
+
   # Path to save the trained model
   output_path: "./models/damage_detection/mobilenet_ssd.pth"
+
+data:
+  # Synthetic data parameters
+  train_split: 0.8
+  val_split: 0.2
+  
+  # Negative sample ratio (undamaged chairs for better discrimination)
+  negative_sample_ratio: 0.1
+  
+  # Multi-damage ratio (images with 2+ damages)
+  multi_damage_ratio: 0.15

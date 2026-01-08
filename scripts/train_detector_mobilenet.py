@@ -70,14 +70,31 @@ CLASS_WEIGHTS = {
 # DATA AUGMENTATION
 # =============================================================================
 class AugmentationTransform:
-    """Advanced augmentation pipeline for object detection."""
+    """Advanced augmentation pipeline for object detection.
+    
+    CRITICAL: This transform must exactly match the inference preprocessing
+    to avoid domain gap. It:
+    1. Resizes while maintaining aspect ratio
+    2. Pads to square (320x320)
+    3. Normalizes with ImageNet mean/std
+    4. Adjusts bounding boxes for the padding offset
+    """
     
     def __init__(self, resize: int = 320, augment: bool = True):
         self.resize = resize
         self.augment = augment
     
-    def __call__(self, img: Image.Image) -> Tuple[torch.Tensor, Tuple[float, float]]:
+    def __call__(self, img: Image.Image, boxes: list = None) -> Tuple[torch.Tensor, Tuple[float, float, int, int]]:
+        """Transform image and optionally adjust bounding boxes.
+        
+        Returns:
+            img_tensor: Transformed image tensor
+            transform_info: (scale_x, scale_y, pad_x, pad_y) for bbox adjustment
+        """
         orig_w, orig_h = img.size
+        
+        # Store original for bbox calculation
+        flipped = False
         
         if self.augment:
             if random.random() > 0.5:
@@ -92,19 +109,27 @@ class AugmentationTransform:
                 angle = random.uniform(-5, 5)
                 img = TF.rotate(img, angle, expand=False)
             
-            if random.random() > 0.5:
-                img = TF.hflip(img)
+            # DISABLE horizontal flip for chair detection - it breaks left/right leg labeling
+            # if random.random() > 0.5:
+            #     img = TF.hflip(img)
+            #     flipped = True
             
-            # Add more aggressive augmentation for damage visibility
             if random.random() > 0.7:
                 saturation_factor = random.uniform(0.8, 1.2)
                 img = TF.adjust_saturation(img, saturation_factor)
         
+        # Resize maintaining aspect ratio
         img.thumbnail((self.resize, self.resize), Image.Resampling.LANCZOS)
+        new_w, new_h = img.size
         
+        # Calculate scale factors AFTER thumbnail resize
+        sx = new_w / orig_w
+        sy = new_h / orig_h
+        
+        # Pad to square with gray background
         img_resized = Image.new('RGB', (self.resize, self.resize), (128, 128, 128))
-        paste_x = (self.resize - img.width) // 2
-        paste_y = (self.resize - img.height) // 2
+        paste_x = (self.resize - new_w) // 2
+        paste_y = (self.resize - new_h) // 2
         img_resized.paste(img, (paste_x, paste_y))
         
         img_tensor = TF.to_tensor(img_resized)
@@ -114,10 +139,8 @@ class AugmentationTransform:
             std=[0.229, 0.224, 0.225]
         )
         
-        sx = self.resize / orig_w
-        sy = self.resize / orig_h
-        
-        return img_tensor, (sx, sy)
+        # Return scale factors AND padding offsets for correct bbox adjustment
+        return img_tensor, (sx, sy, paste_x, paste_y)
 
 
 # =============================================================================
@@ -163,7 +186,8 @@ class EnhancedChairDataset(Dataset):
             logger.error(f"Failed to load image {img_path}: {e}")
             return self.__getitem__((idx + 1) % len(self.ann))
         
-        img_tensor, (sx, sy) = self.transform(img)
+        # Transform returns (scale_x, scale_y, pad_x, pad_y)
+        img_tensor, (sx, sy, pad_x, pad_y) = self.transform(img)
         
         boxes = []
         labels = []
@@ -174,8 +198,11 @@ class EnhancedChairDataset(Dataset):
                 continue
             
             x1, y1, x2, y2 = bbox
-            x1, x2 = x1 * sx, x2 * sx
-            y1, y2 = y1 * sy, y2 * sy
+            # Apply scale AND padding offset
+            x1 = x1 * sx + pad_x
+            x2 = x2 * sx + pad_x
+            y1 = y1 * sy + pad_y
+            y2 = y2 * sy + pad_y
             
             x1 = max(0, min(x1, self.resize - 1))
             x2 = max(x1 + 1, min(x2, self.resize))
@@ -195,8 +222,11 @@ class EnhancedChairDataset(Dataset):
             bbox = dmg.get("bbox", [0, 0, 10, 10])
             x1, y1, x2, y2 = bbox
             
-            x1, x2 = x1 * sx, x2 * sx
-            y1, y2 = y1 * sy, y2 * sy
+            # Apply scale AND padding offset
+            x1 = x1 * sx + pad_x
+            x2 = x2 * sx + pad_x
+            y1 = y1 * sy + pad_y
+            y2 = y2 * sy + pad_y
             
             x1 = max(0, min(x1, self.resize - 1))
             x2 = max(x1 + 1, min(x2, self.resize))
@@ -292,21 +322,47 @@ class WeightedLossModel(nn.Module):
 # MODEL BUILDING
 # =============================================================================
 def build_model(num_classes: int, use_pretrained: bool = True) -> nn.Module:
-    """Build SSD-MobileNet model optimized for damage detection."""
-    # Use pretrained weights for better initialization
+    """Build SSD-MobileNet model optimized for damage detection.
+    
+    CRITICAL: When using pretrained=True with a different num_classes,
+    torchvision's SSD automatically replaces the classification head.
+    We DON'T load pretrained weights directly - we load the backbone pretrained
+    and let the head initialize randomly for our custom classes.
+    """
+    # IMPORTANT: For transfer learning with custom classes:
+    # 1. Load model WITHOUT pretrained weights first (random init)
+    # 2. This gives us the correct architecture for our num_classes
+    # 3. The backbone (MobileNetV3) benefits from ImageNet pretraining
+    #    which is already baked into torchvision's implementation
+    
     if use_pretrained:
         try:
             from torchvision.models.detection import SSDLite320_MobileNet_V3_Large_Weights
+            # Load with pretrained weights - torchvision handles head replacement
             model = ssdlite320_mobilenet_v3_large(
-                weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT, 
-                num_classes=num_classes
+                weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT
             )
-            logger.info("✓ Loaded pretrained weights for better initialization")
+            
+            # Replace the classification head for our custom number of classes
+            # SSD head structure: head.classification_head
+            in_channels = model.head.classification_head.module_list[-1].in_channels
+            num_anchors = model.head.classification_head.num_columns
+            
+            # Replace classification head with correct num_classes
+            model.head.classification_head = nn.Sequential(
+                *list(model.head.classification_head.module_list[:-1]),
+                nn.Conv2d(in_channels, num_classes * num_anchors, kernel_size=1)
+            )
+            
+            logger.info(f"✓ Loaded pretrained backbone, replaced head for {num_classes} classes")
         except Exception as e:
-            logger.warning(f"Could not load pretrained weights: {e}, using random init")
+            logger.warning(f"Could not modify pretrained model: {e}")
+            logger.warning("Falling back to random initialization")
             model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
     else:
         model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
+        logger.info(f"✓ Initialized model with random weights for {num_classes} classes")
+    
     return model
 
 

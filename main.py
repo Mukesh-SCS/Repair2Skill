@@ -37,20 +37,26 @@ def main():
     ap.add_argument("--generate-data", action="store_true")
     ap.add_argument("--samples", type=int, default=1000)
     ap.add_argument("--train-frcnn", action="store_true")
-    ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--batch", type=int, default=2)
+    ap.add_argument("--epochs", type=int, default=50)  # Increased default
+    ap.add_argument("--batch", type=int, default=16)   # Increased for faster training
     ap.add_argument("--camera", action="store_true")
     ap.add_argument("--upload", type=str)
-    ap.add_argument("--threshold", type=float, default=0.10)
+    ap.add_argument("--threshold", type=float, default=0.05)  # Lowered default for better detection
     ap.add_argument("--debug", action="store_true", help="Enable debug mode for detection")
     args = ap.parse_args()
 
     # ---- Stage 0: Data Gen / Training ----
     if args.generate_data:
+        print("[INFO] Generating synthetic training data...")
+        print("[INFO] This will create images with damage AND negative samples (no damage)")
         SyntheticDataGenerator().generate_dataset(N=args.samples)
+        print("[INFO] Data generation complete!")
+        print("[INFO] Next step: Train the model with: python main.py --train-frcnn --epochs 50")
         return
 
     if args.train_frcnn:
+        print("[INFO] Starting model training...")
+        print("[INFO] This may take a while depending on your hardware.")
         subprocess.run([
             sys.executable, "scripts/train_detector_mobilenet.py",
             "--epochs", str(args.epochs),
@@ -70,19 +76,27 @@ def main():
 
     model_path = "./models/damage_detection/mobilenet_ssd.pth"
     if not os.path.exists(model_path):
-        print("[ERROR] Model not found. Train first.")
+        print("[ERROR] Model not found at:", model_path)
+        print("[ERROR] Please train the model first:")
+        print("  1. Generate data: python main.py --generate-data --samples 2000")
+        print("  2. Train model:   python main.py --train-frcnn --epochs 50")
         return
 
     os.makedirs("outputs", exist_ok=True)
 
     # ---- Stage 2: Detection ----
+    print("[INFO] Running damage detection...")
     stage1 = detect_damage_and_parts(image_path, weights=model_path, threshold=args.threshold, debug=args.debug)
     with open("outputs/stage1_parts.json", "w") as f:
         json.dump(stage1, f, indent=2)
 
     pairs = stage1.get("detected_pairs", [])
     if not pairs:
-        print("[WARN] No damaged parts detected.")
+        print("[WARN] No damaged parts detected!")
+        print("[HINT] Try:")
+        print("  - Using a lower threshold: --threshold 0.01")
+        print("  - Enabling debug mode: --debug")
+        print("  - Retraining the model with more epochs")
         return
 
     # Pick top detected damage-part pair
