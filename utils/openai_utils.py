@@ -174,7 +174,7 @@ def _get_fallback_plan(part, damage):
             "tools": ["screwdriver", "wrench"]
         })
     else:
-        # Default generic fix
+        # Default generic cleaning step
         steps.append({
             "step_id": 2,
             "action_type": "clean",

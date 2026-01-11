@@ -101,25 +101,72 @@ def save_screenshot(filename, width=640, height=480, dist=1.8, yaw=40, pitch=-35
             print(f"[WARN] Failed to save screenshot: {e2}")
 
 
-def step_sim(seconds: float = 0.4, hz: int = 120):
+# Global callback for frame capture during simulation steps
+# This allows streaming during repair execution, not just idle loop
+_frame_callback = None
+
+def set_frame_callback(callback):
+    """Set a callback function to be called during simulation steps.
+    
+    The callback will be called periodically during step_sim() to allow
+    frame capture for streaming. The callback should be fast (< 50ms).
+    
+    Args:
+        callback: A callable that takes no arguments, or None to disable
+    """
+    global _frame_callback
+    _frame_callback = callback
+
+
+def step_sim(seconds: float = 0.4, hz: int = 120, blocking: bool = True):
     """Advance the physics simulation.
     
     Args:
         seconds: Duration to simulate
         hz: Physics update frequency (default 120 Hz - optimized for streaming)
+        blocking: If True, uses time.sleep between steps. If False, runs steps
+                  as fast as possible (useful for batch operations).
     
-    NOTE: This function contains time.sleep(). 
-    The Flask app (app.py) will OVERRIDE this function dynamically 
-    to remove the sleep and capture video frames instead.
+    NOTE: When blocking=True, this function contains time.sleep().
+    For better streaming performance, consider using blocking=False
+    when the visual update timing isn't critical.
     
     Performance Note:
     - Reduced from 240 Hz to 120 Hz for better streaming performance
     - Still 120x real-time simulation, more than sufficient
     - Saves ~50% CPU while maintaining visual quality at 30 FPS
     """
-    for _ in range(int(seconds * hz)):
-        p.stepSimulation()
-        time.sleep(1.0 / hz)
+    global _frame_callback
+    num_steps = int(seconds * hz)
+    
+    # Capture frame every N steps (~30 FPS if hz=120 and frame_interval=4)
+    frame_interval = max(1, hz // 30)
+    
+    if blocking:
+        for i in range(num_steps):
+            p.stepSimulation()
+            
+            # Call frame callback periodically for streaming
+            if _frame_callback and i % frame_interval == 0:
+                try:
+                    _frame_callback()
+                except Exception:
+                    pass  # Don't let frame capture errors stop simulation
+            
+            time.sleep(1.0 / hz)
+    else:
+        # Non-blocking mode - run steps as fast as possible
+        for i in range(num_steps):
+            p.stepSimulation()
+            
+            # Still call frame callback but less frequently
+            if _frame_callback and i % (frame_interval * 2) == 0:
+                try:
+                    _frame_callback()
+                except Exception:
+                    pass
+        # Brief yield to allow other threads to run
+        time.sleep(0.001)
 
 
 def keep_window_open():

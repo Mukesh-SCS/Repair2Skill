@@ -62,18 +62,39 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = build_model_for_inference(weights, device)
 
-    # Add normalization to match training preprocessing
+    # CRITICAL: Preprocessing must EXACTLY match training!
+    # Training uses: resize with aspect ratio + center padding + normalize
+    # We must do the same here for consistent predictions
+    
+    img = Image.open(image_path).convert("RGB")
+    orig_w, orig_h = img.size
+    target_size = 320
+    
+    # Step 1: Resize maintaining aspect ratio (same as training)
+    img_resized = img.copy()
+    img_resized.thumbnail((target_size, target_size), Image.Resampling.LANCZOS)
+    new_w, new_h = img_resized.size
+    
+    # Step 2: Pad to square with gray background (same as training)
+    img_padded = Image.new('RGB', (target_size, target_size), (128, 128, 128))
+    paste_x = (target_size - new_w) // 2
+    paste_y = (target_size - new_h) // 2
+    img_padded.paste(img_resized, (paste_x, paste_y))
+    
+    # Calculate inverse transform for bbox mapping back to original coords
+    scale_x = new_w / orig_w
+    scale_y = new_h / orig_h
+    
+    # Step 3: Convert to tensor and normalize (same as training)
     tf = transforms.Compose([
-        transforms.Resize((320, 320)),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
         )
     ])
-
-    img = Image.open(image_path).convert("RGB")
-    img_t = tf(img).to(device)
+    
+    img_t = tf(img_padded).to(device)
 
     with torch.no_grad():
         out = model([img_t])[0]
@@ -84,6 +105,25 @@ def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
     boxes = out["boxes"][keep_indices].detach().cpu().numpy()
     scores = out["scores"][keep_indices].detach().cpu().numpy()
     labels = out["labels"][keep_indices].detach().cpu().numpy()
+    
+    # Transform boxes back to original image coordinates
+    # Reverse: subtract padding, then divide by scale
+    boxes_orig = []
+    for box in boxes:
+        x1, y1, x2, y2 = box
+        # Remove padding offset
+        x1 = (x1 - paste_x) / scale_x
+        y1 = (y1 - paste_y) / scale_y
+        x2 = (x2 - paste_x) / scale_x
+        y2 = (y2 - paste_y) / scale_y
+        # Clamp to original image bounds
+        x1 = max(0, min(orig_w, x1))
+        x2 = max(0, min(orig_w, x2))
+        y1 = max(0, min(orig_h, y1))
+        y2 = max(0, min(orig_h, y2))
+        boxes_orig.append([x1, y1, x2, y2])
+    
+    boxes = np.array(boxes_orig) if boxes_orig else boxes
 
     parts = []
     damages = []

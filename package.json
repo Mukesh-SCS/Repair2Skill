@@ -2,6 +2,10 @@
   "name": "repair2skill",
   "version": "1.0.0",
   "scripts": {
-    "dev": "cd ui && npm start"
+    "install-ui": "cd ui && npm install",
+    "start": "cd ui && npm start",
+    "dev": "cd ui && npm start",
+    "server": "cd ui && node server.js",
+    "build": "cd ui && npm run build"
   }
 }
