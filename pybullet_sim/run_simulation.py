@@ -14,7 +14,7 @@ import json
 import threading
 import time
 from sim_connection import connect, reset_camera, keep_window_open, save_screenshot
-from sim_robot import load_robot
+from sim_robot import load_robot, move_to_home
 from sim_scene import spawn_simple_chair
 from sim_plan_executor import load_json, execute_step
 try:
@@ -198,6 +198,18 @@ def main():
             except Exception as e:
                 print(f"[WARN] Failed to save step screenshot: {e}")
 
+    # =========================================================================
+    # RESET ROBOT TO HOME POSITION AFTER REPAIR SEQUENCE
+    # =========================================================================
+    # After completing all repair steps, return robot to a neutral home pose.
+    # This provides a clean visual ending and prepares the robot for the next task.
+    print("[INFO] All repair steps complete. Returning robot to home position...")
+    try:
+        move_to_home(robot, args.robot)
+        print("[INFO] Robot successfully returned to home position")
+    except Exception as e:
+        print(f"[WARN] Could not move robot to home position: {e}")
+    
     # Keep simulation running continuously for live streaming
     print("[INFO] Repair plan execution complete. Keeping simulation running for live streaming...")
     
