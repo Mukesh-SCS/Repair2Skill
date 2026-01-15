@@ -49,6 +49,34 @@ except ImportError:
     print("[WARNING] collision_aware_motion not available - using direct motion")
 import time
 
+# ============================================================================
+# GRASP EXECUTION FLAGS
+# ============================================================================
+# Controls whether angled grasps (front, side, back) are actually executed.
+# When True, uses orientation-constrained IK for angled approaches.
+# When False, falls back to overhead grasps for all parts.
+EXECUTE_ANGLED_GRASPS = True
+
+# Only enable angled grasps for these part categories (safe rollout).
+# Set to True to enable angled grasps for that category.
+ANGLED_GRASP_ALLOWLIST = {
+    "back": True,       # backrest - front approach works well
+    "leg": False,       # legs - keep False until verified
+    "armrest": False,   # armrests - keep False until verified
+    "seat": False,      # seat - too large, keep overhead
+}
+
+
+def part_category(name: str) -> str:
+    """Determine part category from name for grasp strategy selection."""
+    n = name.lower()
+    if "back" in n: return "back"
+    if "leg" in n: return "leg"
+    if "armrest" in n or "arm" in n: return "armrest"
+    if "seat" in n: return "seat"
+    return "other"
+
+
 def load_json(path):
     """Load a JSON file from disk."""
     with open(path) as f:
@@ -58,6 +86,99 @@ def load_json(path):
 # ============================================================================
 # COLLISION-SAFE MOTION WRAPPER
 # ============================================================================
+
+def move_ee_pose(robot, ee_link, pos, orn=None, steps=80):
+    """Move EE to a pose (position + optional orientation).
+    
+    When orientation is provided, uses IK with orientation constraint.
+    This enables angled grasps where the gripper approaches from front/side.
+    
+    Args:
+        robot: Robot body ID
+        ee_link: End-effector link index
+        pos: Target position [x, y, z]
+        orn: Target orientation quaternion [x, y, z, w] or None for default
+        steps: Number of simulation steps
+        
+    Returns:
+        bool: True if motion executed (success not guaranteed for IK)
+    """
+    if orn is None:
+        move_ee(robot, ee_link, pos, steps=steps)
+        return True
+    
+    # IK with orientation constraint
+    joints = p.calculateInverseKinematics(
+        robot, ee_link, pos, targetOrientation=orn
+    )
+    num_joints = p.getNumJoints(robot)
+    
+    # Apply only first 7 arm joints
+    for j in range(min(7, num_joints)):
+        p.setJointMotorControl2(
+            robot, j, p.POSITION_CONTROL,
+            targetPosition=joints[j],
+            force=500
+        )
+    
+    step_sim(steps / 240.0)
+    return True
+
+
+def score_side_clearance(robot, ee_link, base_pos, parts, excluded_body=None, 
+                         side_axis="y", sign=1, probe=0.18):
+    """Score clearance on a side for side-approach selection.
+    
+    Lower score = better (more clearance from obstacles).
+    Checks closest points between gripper (or robot) and obstacles.
+    Uses gripper body when available since that's what actually collides.
+    
+    Args:
+        robot: Robot body ID
+        ee_link: End-effector link index  
+        base_pos: Base position to probe from [x, y, z]
+        parts: Dictionary of parts for obstacle detection
+        excluded_body: Body ID to exclude (e.g., target part)
+        side_axis: 'y' or 'x' - which axis to probe along
+        sign: +1 or -1 - which direction along axis
+        probe: Distance to probe (default 18cm)
+        
+    Returns:
+        float: Score (lower = more clearance)
+    """
+    axis_index = 1 if side_axis == "y" else 0
+    
+    # Compute the probe position: shifted along the approach axis
+    probe_pos = list(base_pos)
+    probe_pos[axis_index] += sign * probe
+    
+    obstacle_ids = get_obstacle_ids_from_parts(parts) if COLLISION_AWARE_ENABLED else []
+    if excluded_body is not None:
+        obstacle_ids = [o for o in obstacle_ids if o != excluded_body]
+    
+    # Use gripper body if available (it's what actually collides during approach)
+    gripper_body = get_visual_gripper_body()
+    check_body = gripper_body if gripper_body is not None else robot
+    
+    # Score based on closest geometry between gripper/robot and obstacles
+    score = 0.0
+    check_radius = 0.25  # 25cm radius check
+    
+    for obs in obstacle_ids:
+        try:
+            # Check closest points between gripper/robot and obstacle
+            pts = p.getClosestPoints(bodyA=check_body, bodyB=obs, distance=check_radius)
+            if pts:
+                # Use minimum distance from all contact pairs
+                min_dist = min(pt[8] for pt in pts)  # pt[8] is contact distance
+                # Penalize closeness: closer = higher score
+                if min_dist < check_radius:
+                    score += (check_radius - min_dist)
+        except:
+            pass
+    
+    return score
+
 
 def move_ee_safe(robot, ee_link, pos, parts=None, excluded_part=None, 
                  use_collision_check=True, steps=100):
@@ -156,12 +277,211 @@ def check_motion_collision(robot, ee_link, target_pos, parts, excluded_part=None
         return False, f"Check failed: {e}"
 
 
+# =============================================================================
+# SEMANTIC GRASP POSE SELECTION
+# =============================================================================
+# Chooses grasp approach direction based on part type and geometry.
+# This avoids "straight down into narrow gaps" collisions and produces
+# more believable grasps (backrest from front, legs from side, etc.)
+# =============================================================================
+
+def get_part_dimensions(body_id):
+    """Get the dimensions of a part from its visual shape data.
+    
+    Returns:
+        Tuple of (width, depth, height) or None if unable to determine
+    """
+    try:
+        visual_data = p.getVisualShapeData(body_id)
+        if visual_data and len(visual_data) > 0:
+            shape_type = visual_data[0][2]  # GEOM_BOX = 3
+            if shape_type == p.GEOM_BOX:
+                half_extents = visual_data[0][3]  # (hx, hy, hz)
+                return [2 * h for h in half_extents]  # Full dimensions
+        
+        # Fallback: use AABB
+        aabb_min, aabb_max = p.getAABB(body_id)
+        return [aabb_max[i] - aabb_min[i] for i in range(3)]
+    except:
+        return None
+
+
+def select_grasp_strategy(part_name, body_id):
+    """Select grasp approach direction based on part type and geometry.
+    
+    Returns a dictionary with:
+        approach_dir: 'above', 'front', 'side', 'back'
+        approach_offset: [x, y, z] offset from part center for pre-approach
+        grasp_offset: [x, y, z] offset for final grasp position
+        ee_orientation: Optional EE orientation quaternion for grasp
+        gripper_open: Suggested gripper open value (wider for bigger parts)
+        
+    Strategy logic:
+        - Legs/armrests (long thin): grasp from side (±Y or ±X approach)
+        - Backrest: grasp from front (±X approach)  
+        - Seat: grasp from side (if at all - usually too big)
+        - Default: from above (overhead grasp)
+    """
+    import math
+    
+    dims = get_part_dimensions(body_id)
+    if dims is None:
+        dims = [0.1, 0.1, 0.1]  # Fallback
+    
+    width, depth, height = dims
+    part_lower = part_name.lower()
+    
+    # Default strategy (overhead grasp)
+    strategy = {
+        'approach_dir': 'above',
+        'approach_offset': [0, 0, 0.15],   # 15cm above
+        'grasp_offset': [0, 0, 0.10],      # 10cm above (TCP at center)
+        'ee_orientation': None,             # Default orientation
+        'gripper_open': 0.0,                # Standard open
+    }
+    
+    # Legs: tall thin parts - grasp from side
+    if 'leg' in part_lower:
+        # Legs are typically taller than wide - grasp from side
+        # Approach from +Y or -Y depending on position
+        strategy['approach_dir'] = 'side'
+        strategy['approach_offset'] = [0, 0.12, 0]   # 12cm to side
+        strategy['grasp_offset'] = [0, 0.02, 0]      # Close to side
+        # Wider opening for leg cross-section
+        strategy['gripper_open'] = 0.0
+        print(f"[GRASP] Leg detected ({width:.2f}x{depth:.2f}x{height:.2f}m) - side approach")
+    
+    # Armrests: long horizontal parts - grasp from side/above
+    elif 'armrest' in part_lower or 'arm' in part_lower:
+        # Armrests are typically long and thin horizontally
+        strategy['approach_dir'] = 'above'  # Still from above but at an angle
+        strategy['approach_offset'] = [0, 0, 0.12]
+        strategy['grasp_offset'] = [0, 0, 0.08]
+        print(f"[GRASP] Armrest detected ({width:.2f}x{depth:.2f}x{height:.2f}m) - above approach")
+    
+    # Backrest/back: tall vertical - grasp from front
+    elif 'back' in part_lower:
+        # Backrest - approach from front (+X direction, toward robot)
+        strategy['approach_dir'] = 'front'
+        strategy['approach_offset'] = [0.15, 0, 0]   # 15cm in front
+        strategy['grasp_offset'] = [0.05, 0, 0]      # 5cm from front face
+        print(f"[GRASP] Backrest detected ({width:.2f}x{depth:.2f}x{height:.2f}m) - front approach")
+    
+    # Seat: large flat part - generally avoid, but side grasp if needed
+    elif 'seat' in part_lower:
+        strategy['approach_dir'] = 'side'
+        strategy['approach_offset'] = [0, 0.20, 0]   # 20cm to side (seat is big)
+        strategy['grasp_offset'] = [0, 0.05, 0]
+        strategy['gripper_open'] = 0.0  # May need wider
+        print(f"[GRASP] Seat detected ({width:.2f}x{depth:.2f}x{height:.2f}m) - side approach (caution: large)")
+    
+    else:
+        # Default: overhead grasp
+        print(f"[GRASP] Generic part ({width:.2f}x{depth:.2f}x{height:.2f}m) - overhead approach")
+    
+    return strategy
+
+
+def compute_approach_positions(target_pos, strategy, hover_height=0.25, tcp_offset=0.10, side_sign=1):
+    """Compute hover and grasp positions based on grasp strategy.
+    
+    Args:
+        target_pos: Part center position [x, y, z]
+        strategy: Grasp strategy dict from select_grasp_strategy()
+        hover_height: Additional hover clearance (default 25cm)
+        tcp_offset: TCP offset for gripper (default 10cm)
+        side_sign: For side approaches, +1 = +Y side, -1 = -Y side
+        
+    Returns:
+        Tuple of (hover_pos, grasp_pos, ee_orn)
+    """
+    approach_dir = strategy['approach_dir']
+    approach_offset = strategy['approach_offset']
+    grasp_offset = strategy['grasp_offset']
+    
+    if approach_dir == 'above':
+        # Standard overhead approach
+        hover_pos = [
+            target_pos[0] + approach_offset[0],
+            target_pos[1] + approach_offset[1],
+            target_pos[2] + hover_height
+        ]
+        grasp_pos = [
+            target_pos[0] + grasp_offset[0],
+            target_pos[1] + grasp_offset[1],
+            target_pos[2] + tcp_offset
+        ]
+        ee_orn = None  # Default orientation (pointing down)
+        
+    elif approach_dir == 'front':
+        # Approach from front (+X), gripper pointing toward -X
+        hover_pos = [
+            target_pos[0] + approach_offset[0] + 0.10,  # Extra clearance
+            target_pos[1],
+            target_pos[2]
+        ]
+        grasp_pos = [
+            target_pos[0] + grasp_offset[0],
+            target_pos[1],
+            target_pos[2]
+        ]
+        # Rotate gripper to point toward -X (90° pitch)
+        ee_orn = p.getQuaternionFromEuler([0, 1.57, 0])  # 90° around Y
+        
+    elif approach_dir == 'side':
+        # Approach from side (+Y or -Y based on side_sign parameter)
+        # side_sign = 1 means +Y, side_sign = -1 means -Y
+        hover_pos = [
+            target_pos[0],
+            target_pos[1] + side_sign * (abs(approach_offset[1]) + 0.10),
+            target_pos[2]
+        ]
+        grasp_pos = [
+            target_pos[0],
+            target_pos[1] + side_sign * abs(grasp_offset[1]),
+            target_pos[2]
+        ]
+        # Rotate gripper to point toward ±Y (90° roll)
+        # Adjust roll direction based on side_sign
+        roll_angle = 1.57 if side_sign > 0 else -1.57
+        ee_orn = p.getQuaternionFromEuler([roll_angle, 0, 0])
+        
+    elif approach_dir == 'back':
+        # Approach from back (-X)
+        hover_pos = [
+            target_pos[0] - approach_offset[0] - 0.10,
+            target_pos[1],
+            target_pos[2]
+        ]
+        grasp_pos = [
+            target_pos[0] - grasp_offset[0],
+            target_pos[1],
+            target_pos[2]
+        ]
+        ee_orn = p.getQuaternionFromEuler([0, -1.57, 0])  # -90° around Y
+        
+    else:
+        # Fallback to overhead
+        hover_pos = [target_pos[0], target_pos[1], target_pos[2] + hover_height]
+        grasp_pos = [target_pos[0], target_pos[1], target_pos[2] + tcp_offset]
+        ee_orn = None
+    
+    return hover_pos, grasp_pos, ee_orn
+
+
 def approach_linear(robot, ee_link, start_pos, end_pos, steps=25, 
-                    stop_on_contact=True, contact_bodies=None, gripper_body=None):
+                    stop_on_contact=True, contact_bodies=None, gripper_body=None,
+                    use_compliance=True):
     """Move the end-effector linearly from start to end, with contact detection.
     
     This provides realistic collision-aware motion without disabling physics.
     The robot will stop if it contacts any of the specified bodies.
+    
+    COMPLIANCE MODE: When enabled, uses "soft contact" behavior:
+    - Reduces motor force when near contact (proximity < 3cm)
+    - Uses smaller steps during final approach phase
+    - More frequent collision checks near target
+    This prevents "bulldozing" and reduces jitter during grasp.
     
     Args:
         robot: Robot body ID
@@ -172,10 +492,22 @@ def approach_linear(robot, ee_link, start_pos, end_pos, steps=25,
         stop_on_contact: If True, stop when contact detected
         contact_bodies: List of body IDs to check for contact with
         gripper_body: Optional gripper body ID to also check for contacts
+        use_compliance: If True, reduce forces near contact (default True)
         
     Returns:
         bool: True if reached end without contact, False if stopped early
     """
+    import math
+    
+    # Compliance parameters
+    NEAR_CONTACT_THRESHOLD = 0.03  # 3cm - switch to soft mode
+    NORMAL_MOTOR_FORCE = 500
+    SOFT_MOTOR_FORCE = 150
+    NORMAL_MAX_VEL = 3.0
+    SOFT_MAX_VEL = 0.5
+    
+    total_distance = math.sqrt(sum((end_pos[i] - start_pos[i])**2 for i in range(3)))
+    
     for i in range(1, steps + 1):
         t = i / steps
         pos = [
@@ -183,7 +515,19 @@ def approach_linear(robot, ee_link, start_pos, end_pos, steps=25,
             start_pos[1] + t * (end_pos[1] - start_pos[1]),
             start_pos[2] + t * (end_pos[2] - start_pos[2]),
         ]
-        move_ee(robot, ee_link, pos, steps=10)
+        
+        # Calculate remaining distance to target
+        remaining = math.sqrt(sum((end_pos[j] - pos[j])**2 for j in range(3)))
+        
+        # Compliance: use smaller steps when close to target (near contact zone)
+        # This provides softer approach without ineffective motor control changes
+        if use_compliance and remaining < NEAR_CONTACT_THRESHOLD:
+            # Near-contact mode: finer steps for gentler approach
+            move_steps = 5
+        else:
+            move_steps = 10
+        
+        move_ee(robot, ee_link, pos, steps=move_steps)
         p.stepSimulation()
         
         if stop_on_contact and contact_bodies:
@@ -199,10 +543,73 @@ def approach_linear(robot, ee_link, start_pos, end_pos, steps=25,
                     if gripper_contacts:
                         print(f"[APPROACH] Gripper contact detected with body {b} at step {i}/{steps}")
                         return False
+    
     return True
 
 
-def check_grasp_proximity(robot, ee_link, part_body, max_distance=0.10, tcp_offset_z=0.10):
+def retreat_mirrored(robot, ee_link, grasp_pos, hover_pos, parts, excluded_part=None, steps=25):
+    """Retreat by reversing the final approach: grasp_pos -> hover_pos.
+    
+    This avoids lateral motion near obstacles by following the same path
+    we used to approach, but in reverse. Much safer than arbitrary retreat.
+    
+    Args:
+        robot: Robot body ID
+        ee_link: End-effector link index
+        grasp_pos: Position we grasped from [x, y, z]
+        hover_pos: Position we hovered at before approach [x, y, z]
+        parts: Dictionary of parts for collision detection
+        excluded_part: Part name to exclude from collision checks
+        steps: Number of steps for retreat motion
+        
+    Returns:
+        bool: True if retreat succeeded without contact
+    """
+    ee_state = p.getLinkState(robot, ee_link)
+    cur = list(ee_state[0])
+    
+    # Build list of obstacle bodies
+    contact_bodies = []
+    if COLLISION_AWARE_ENABLED and parts:
+        contact_bodies = get_obstacle_ids_from_parts(parts)
+        if excluded_part and excluded_part in parts:
+            excluded_body = parts[excluded_part][0]
+            contact_bodies = [b for b in contact_bodies if b != excluded_body]
+    
+    gripper_body = get_visual_gripper_body()
+    
+    # First go back to grasp_pos (if we drifted)
+    ok1 = approach_linear(
+        robot, ee_link, cur, grasp_pos,
+        steps=max(10, steps // 2),
+        stop_on_contact=True,
+        contact_bodies=contact_bodies if contact_bodies else None,
+        gripper_body=gripper_body,
+        use_compliance=True
+    )
+    if not ok1:
+        print("[RETREAT] Contact while returning to grasp_pos; continuing anyway")
+    
+    # Then retreat to hover_pos (the main retreat)
+    ok2 = approach_linear(
+        robot, ee_link, grasp_pos, hover_pos,
+        steps=steps,
+        stop_on_contact=True,
+        contact_bodies=contact_bodies if contact_bodies else None,
+        gripper_body=gripper_body,
+        use_compliance=True
+    )
+    
+    if ok2:
+        print("[RETREAT] Successfully retreated to hover position")
+    else:
+        print("[RETREAT] Contact during retreat; may need manual recovery")
+    
+    return ok2
+
+
+def check_grasp_proximity(robot, ee_link, part_body, max_distance=0.10, tcp_offset_z=0.10,
+                          use_simple_vertical=False):
     """Check if the gripper TCP is close enough to grasp the part.
     
     This ensures we only create grasp constraints when the gripper
@@ -211,17 +618,20 @@ def check_grasp_proximity(robot, ee_link, part_body, max_distance=0.10, tcp_offs
     The TCP (tool center point) is offset from the EE flange - this is
     where the gripper fingers actually meet the object.
     
-    NOTE: Uses simplified world-frame TCP calculation (assumes overhead grasp).
-    For angled approaches, the constraint transform will handle the actual
-    relative positioning. This check is just to prevent "ghost grasps" where
-    the gripper is far from the object.
+    Two modes:
+    - Orientation-aware (default): Uses proper transform math. Correct for
+      angled grasps but can give large distances when wrist is tilted.
+    - Simple vertical (use_simple_vertical=True): Assumes overhead grasp,
+      just subtracts TCP offset from EE Z. Better for overhead grasps where
+      the wrist tilts but we still want to measure vertical proximity.
     
     Args:
         robot: Robot body ID
         ee_link: End-effector link index
         part_body: Body ID of the part to grasp
-        max_distance: Maximum allowed distance (default 10cm for real-scale)
-        tcp_offset_z: Vertical offset from EE to TCP (default 10cm)
+        max_distance: Maximum allowed distance (default 10cm)
+        tcp_offset_z: Offset from EE to TCP along tool axis (default 10cm)
+        use_simple_vertical: If True, use simple Z offset (for overhead grasps)
         
     Returns:
         Tuple of (is_close_enough, distance)
@@ -230,18 +640,24 @@ def check_grasp_proximity(robot, ee_link, part_body, max_distance=0.10, tcp_offs
     
     ee_state = p.getLinkState(robot, ee_link)
     ee_pos = ee_state[0]
-    
-    # Calculate TCP position - simple world-frame offset for overhead grasps
-    # (The constraint creation will use proper transforms for the actual grasp)
-    tcp_pos = [ee_pos[0], ee_pos[1], ee_pos[2] - tcp_offset_z]
+    ee_orn = ee_state[1]
     
     obj_pos, _ = p.getBasePositionAndOrientation(part_body)
     
-    # Calculate distance from TCP to object (not EE to object)
+    if use_simple_vertical:
+        # Simple vertical offset - good for overhead grasps where wrist tilts
+        # but we still want to measure how close we are vertically
+        tcp_world = [ee_pos[0], ee_pos[1], ee_pos[2] - tcp_offset_z]
+    else:
+        # Orientation-aware - correct for angled grasps
+        tcp_local = [0, 0, -tcp_offset_z]  # Pinch point in EE frame
+        tcp_world, _ = p.multiplyTransforms(ee_pos, ee_orn, tcp_local, [0, 0, 0, 1])
+    
+    # Calculate distance from TCP to object center
     distance = math.sqrt(
-        (tcp_pos[0] - obj_pos[0])**2 +
-        (tcp_pos[1] - obj_pos[1])**2 +
-        (tcp_pos[2] - obj_pos[2])**2
+        (tcp_world[0] - obj_pos[0])**2 +
+        (tcp_world[1] - obj_pos[1])**2 +
+        (tcp_world[2] - obj_pos[2])**2
     )
     
     return distance <= max_distance, distance
@@ -346,10 +762,7 @@ def show_working_animation(robot, ee_link, parts, part_name, original_positions=
     # Wiggle action (simulate screwing/unscrewing) - MORE WIGGLES
     print(f"    Working on {part_name}...")
     for i in range(5):  # Increased from 3
-        try:
-            p.setJointMotorControl2(robot, ee_link, p.TORQUE_CONTROL, force=0)
-        except:
-            pass
+        # Just step simulation for visual wiggle effect
         step_sim(0.1)  # Increased from 0.05
     
     try:
@@ -431,7 +844,13 @@ def pick_up_part(robot, ee_link, gripper, open_val, close_val, parts, part_name,
     contact_bodies = [pbody for pname, (pbody, _) in parts.items() if pname != part_name]
     
     # =========================================================================
-    # Step 0b: Make the part dynamic (if it's static) so it can be moved
+    # Step 0b: Get semantic grasp strategy based on part type and geometry
+    # =========================================================================
+    grasp_strategy = select_grasp_strategy(part_name, part_body)
+    print(f"[PICKUP] Grasp strategy for '{part_name}': {grasp_strategy['approach_dir']} approach")
+    
+    # =========================================================================
+    # Step 0c: Make the part dynamic (if it's static) so it can be moved
     # =========================================================================
     # Check if the part has mass 0 (static) - if so, make it dynamic
     try:
@@ -493,25 +912,82 @@ def pick_up_part(robot, ee_link, gripper, open_val, close_val, parts, part_name,
     # Resetting fights physics and causes jitter
     
     # =========================================================================
-    # Step 2: Move to hover position (above the part - safe approach)
+    # Step 2: Compute approach positions using semantic grasp strategy
     # =========================================================================
-    # Hover height is chosen to avoid collision with the chair during approach
-    hover_height = 0.25  # 25cm above the part
+    # Use grasp strategy to determine approach direction and positions
+    hover_height = 0.25  # 25cm clearance
+    
+    # -------------------------------------------------------------------------
+    # 2a: Determine if angled grasp is allowed for this part category
+    # -------------------------------------------------------------------------
+    cat = part_category(part_name)
+    approach_dir = grasp_strategy['approach_dir']
+    use_angled = (
+        EXECUTE_ANGLED_GRASPS
+        and approach_dir != 'above'
+        and ANGLED_GRASP_ALLOWLIST.get(cat, False)
+    )
+    
+    if approach_dir != 'above' and not use_angled:
+        reason = "globally disabled" if not EXECUTE_ANGLED_GRASPS else f"category '{cat}' not in allowlist"
+        print(f"[PICKUP] Angled grasp ({approach_dir}) blocked: {reason} → using overhead")
+        # Force overhead grasp for safety - full valid strategy dict
+        grasp_strategy = {
+            'approach_dir': 'above',
+            'approach_offset': [0, 0, 0.15],
+            'grasp_offset': [0, 0, 0.10],
+            'ee_orientation': None,
+            'gripper_open': 0.0
+        }
+    
+    # -------------------------------------------------------------------------
+    # 2b: For side grasps, pick best side (+Y or -Y) based on clearance
+    # -------------------------------------------------------------------------
+    side_sign = 1  # default: +Y
+    if grasp_strategy['approach_dir'] == 'side' and COLLISION_AWARE_ENABLED:
+        # Score both sides - pass body ID, not part name
+        excluded_body = parts[part_name][0]
+        score_pos = score_side_clearance(robot, ee_link, target_pos, parts, excluded_body=excluded_body, sign=+1)
+        score_neg = score_side_clearance(robot, ee_link, target_pos, parts, excluded_body=excluded_body, sign=-1)
+        side_sign = +1 if score_pos <= score_neg else -1
+        print(f"[PICKUP] Side clearance scores: +Y={score_pos:.3f}, -Y={score_neg:.3f} → using {'+Y' if side_sign == 1 else '-Y'}")
+    
+    # -------------------------------------------------------------------------
+    # 2c: Compute hover / grasp / orientation
+    # -------------------------------------------------------------------------
+    hover_pos, grasp_pos, ee_orn = compute_approach_positions(
+        target_pos, grasp_strategy, 
+        hover_height=hover_height, 
+        tcp_offset=TCP_OFFSET_Z,
+        side_sign=side_sign
+    )
+    
     try:
-        hover_pos = [target_pos[0], target_pos[1], target_pos[2] + hover_height]
         print(f"[PICKUP] Moving to hover position: {hover_pos}")
         
         # Use collision-safe motion to hover (checking against all parts except target)
+        # For angled grasps, if collision detected, fall back to overhead
         if COLLISION_AWARE_ENABLED:
             would_collide, reason = check_motion_collision(
                 robot, ee_link, hover_pos, parts, excluded_part=part_name
             )
             if would_collide:
-                print(f"[PICKUP] Warning: Hover motion may collide: {reason}")
+                if ee_orn is not None:
+                    print(f"[PICKUP] Angled hover blocked: {reason} → falling back to overhead")
+                    ee_orn = None  # Reset to overhead grasp
+                    hover_pos = [target_pos[0], target_pos[1], target_pos[2] + hover_height]
+                    grasp_pos = [target_pos[0], target_pos[1], target_pos[2] + TCP_OFFSET_Z]
+                else:
+                    print(f"[PICKUP] Warning: Hover motion may collide: {reason}")
         
-        move_ee_safe(robot, ee_link, hover_pos, parts=parts, 
-                     excluded_part=part_name, use_collision_check=COLLISION_AWARE_ENABLED,
-                     steps=100)
+        # Use orientation-aware motion if we have a target orientation
+        if ee_orn is not None:
+            print(f"[PICKUP] Using orientation-constrained hover")
+            move_ee_pose(robot, ee_link, hover_pos, ee_orn, steps=100)
+        else:
+            move_ee_safe(robot, ee_link, hover_pos, parts=parts, 
+                         excluded_part=part_name, use_collision_check=COLLISION_AWARE_ENABLED,
+                         steps=100)
     except Exception as e:
         print(f"[PICKUP] Could not move to hover: {e}")
         step_sim(0.2)
@@ -523,15 +999,10 @@ def pick_up_part(robot, ee_link, gripper, open_val, close_val, parts, part_name,
     # Only reset once, right before creating the constraint
     
     # =========================================================================
-    # Step 3: Linear approach to grasp position (with contact detection)
+    # Step 3: Linear approach to grasp position (with compliance control)
     # =========================================================================
-    # Use linear interpolation with contact checking for realistic behavior.
-    # Use TCP offset to align gripper fingers with object center
-    grasp_pos = [
-        target_pos[0],
-        target_pos[1],
-        target_pos[2] + TCP_OFFSET_Z  # TCP offset positions fingers at object
-    ]
+    # Use linear interpolation with contact checking and compliance for
+    # realistic behavior. Compliance reduces forces near contact.
     
     # Get current EE position for linear approach
     ee_state = p.getLinkState(robot, ee_link)
@@ -544,14 +1015,24 @@ def pick_up_part(robot, ee_link, gripper, open_val, close_val, parts, part_name,
         steps=25,
         stop_on_contact=True,
         contact_bodies=contact_bodies,
-        gripper_body=gripper_body  # Include gripper in collision checks
+        gripper_body=gripper_body,
+        use_compliance=True  # Enable soft contact behavior
     )
     
     if not approach_success:
         print(f"[PICKUP] Contact during approach - trying from different angle")
-        # Try approaching from a lateral offset
-        offset_pos = [grasp_pos[0] + 0.05, grasp_pos[1], grasp_pos[2] + 0.05]
-        move_ee(robot, ee_link, offset_pos, steps=50)
+        # Try approaching from a lateral offset (use strategy hint)
+        if grasp_strategy['approach_dir'] == 'front':
+            offset_pos = [grasp_pos[0] + 0.08, grasp_pos[1], grasp_pos[2]]
+        elif grasp_strategy['approach_dir'] == 'side':
+            offset_pos = [grasp_pos[0], grasp_pos[1] + 0.08, grasp_pos[2]]
+        else:
+            offset_pos = [grasp_pos[0] + 0.05, grasp_pos[1], grasp_pos[2] + 0.05]
+        
+        # Use collision-safe motion for retry
+        move_ee_safe(robot, ee_link, offset_pos, parts=parts,
+                     excluded_part=part_name, use_collision_check=COLLISION_AWARE_ENABLED,
+                     steps=50)
         ee_state = p.getLinkState(robot, ee_link)
         current_ee_pos = list(ee_state[0])
         approach_success = approach_linear(
@@ -560,7 +1041,8 @@ def pick_up_part(robot, ee_link, gripper, open_val, close_val, parts, part_name,
             steps=20,
             stop_on_contact=True,
             contact_bodies=contact_bodies,
-            gripper_body=gripper_body  # Include gripper in collision checks
+            gripper_body=gripper_body,
+            use_compliance=True
         )
     
     # Abort if both approach attempts failed - prevents ghost grasping
@@ -571,12 +1053,22 @@ def pick_up_part(robot, ee_link, gripper, open_val, close_val, parts, part_name,
     # =========================================================================
     # Step 4: Proximity check before creating constraint
     # =========================================================================
-    # Only attach if gripper TCP is actually close to the part
-    # Using 0.18m threshold to account for IK positioning tolerances
-    is_close, distance = check_grasp_proximity(robot, ee_link, part_body, max_distance=0.18)
+    # Only attach if gripper TCP is actually close to the part.
+    # 10cm threshold prevents ghost attachment while allowing for IK tolerances.
+    # 
+    # For overhead grasps (when ee_orn is None), use simple
+    # vertical TCP calculation since the wrist tilts but we're still grasping
+    # from above. For angled grasps, use orientation-aware calculation.
+    GRASP_PROXIMITY_THRESHOLD = 0.10  # 10cm - tight threshold
+    use_simple = (ee_orn is None)  # Simple vertical for overhead grasps
+    is_close, distance = check_grasp_proximity(
+        robot, ee_link, part_body, 
+        max_distance=GRASP_PROXIMITY_THRESHOLD,
+        use_simple_vertical=use_simple
+    )
     
     if not is_close:
-        print(f"[PICKUP] Too far to grasp ({distance:.3f}m > 0.18m) - aborting")
+        print(f"[PICKUP] Too far to grasp ({distance:.3f}m > {GRASP_PROXIMITY_THRESHOLD}m) - aborting")
         return False
     
     print(f"[PICKUP] Proximity check passed: {distance:.3f}m from part")
@@ -584,9 +1076,9 @@ def pick_up_part(robot, ee_link, gripper, open_val, close_val, parts, part_name,
     # =========================================================================
     # Step 5: Create constraint to attach object to end-effector
     # =========================================================================
-    # SINGLE reset right before constraint - this is the only one we need
-    # to ensure accurate relative transform calculation
-    p.resetBasePositionAndOrientation(part_body, original_part_pos, [0, 0, 0, 1])
+    # Use current part position (not original) to avoid snap if physics drifted
+    current_part_pos, current_part_orn = p.getBasePositionAndOrientation(part_body)
+    p.resetBasePositionAndOrientation(part_body, current_part_pos, current_part_orn)
     
     # This is the key step - the constraint "welds" the object to the gripper
     print(f"[PICKUP] Creating grasp constraint for {part_name}...")
@@ -698,16 +1190,22 @@ def place_part(robot, ee_link, gripper, open_val, close_val, parts, part_name, d
     step_sim(0.2)
     
     # =========================================================================
-    # Step 4: Retract upward to clear the placed object (collision-safe retreat)
+    # Step 4: Retract using mirrored retreat (reverses approach path)
     # =========================================================================
     try:
-        retract_pos = [drop_zone[0], drop_zone[1], drop_zone[2] + 0.2]
-        print(f"[PLACE] Retracting to {retract_pos}...")
+        # Build contact bodies for retreat (all parts except the released one)
+        # Use mirrored retreat: from drop_zone, ascend vertically by 0.2m
+        hover_pos = [drop_zone[0], drop_zone[1], drop_zone[2] + 0.2]
+        print(f"[PLACE] Mirrored retreat to {hover_pos}...")
         
-        # Safe retreat - the part is now released, so don't exclude it
-        move_ee_safe(robot, ee_link, retract_pos, parts=parts,
-                     excluded_part=None, use_collision_check=COLLISION_AWARE_ENABLED,
-                     steps=60)
+        retreat_mirrored(
+            robot, ee_link,
+            grasp_pos=drop_zone,
+            hover_pos=hover_pos,
+            parts=parts,
+            excluded_part=None,  # Part is released, don't exclude
+            steps=40
+        )
     except Exception as e:
         print(f"[PLACE] Could not retract: {e}")
     
@@ -877,7 +1375,9 @@ def execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, orig
                     
                     try:
                         print(f"  -> Moving to installation position: {install_pos}")
-                        move_ee(robot, ee_link, install_pos, steps=80)
+                        move_ee_safe(robot, ee_link, install_pos, parts=parts,
+                                     excluded_part=replacement_name, use_collision_check=COLLISION_AWARE_ENABLED,
+                                     steps=80)
                     except Exception as e:
                         print(f"  -> Could not move to installation position: {e}")
                     
@@ -952,7 +1452,9 @@ def execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, orig
                     
                     try:
                         print(f"  -> Moving replacement to installation position: {install_pos}")
-                        move_ee(robot, ee_link, install_pos, steps=80)
+                        move_ee_safe(robot, ee_link, install_pos, parts=parts,
+                                     excluded_part=replacement_name, use_collision_check=COLLISION_AWARE_ENABLED,
+                                     steps=80)
                     except Exception as e:
                         print(f"  -> Could not move to installation position: {e}")
                     
@@ -994,6 +1496,10 @@ def execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, orig
                         
                         # Remove the replacement_name key (it's now just "part")
                         del parts[replacement_name]
+                        
+                        # Clean up original_positions to prevent stale position snapping
+                        if original_positions and replacement_name in original_positions:
+                            del original_positions[replacement_name]
                         
                         print(f"  -> {part} successfully installed! (new body {new_body})")
                     except Exception as e:
