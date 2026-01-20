@@ -128,7 +128,9 @@ def spawn_simple_chair(damaged_part_name):
     # 1. Configuration (Dimensions & Colors)
     # ---------------------------------------------------------
    
-    bx, by, bz = 0.5, 0.0, 0.0  # Chair base position (closer to robot for reach)
+    # Chair base position - placed far enough from robot to allow arm clearance
+    # KUKA arm reach is ~0.8m, so placing chair at X=0.6 gives clearance
+    bx, by, bz = 0.65, 0.0, 0.0  # Chair base position (increased from 0.5 for better reach)
     
     # =========================================================================
     # REAL-WORLD SCALE CHAIR DIMENSIONS (meters)

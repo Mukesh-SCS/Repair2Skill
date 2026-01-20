@@ -38,6 +38,7 @@ try:
 except ImportError:
     from sim_connection import step_sim
 import math
+from typing import Tuple, Optional
 
 
 # ============================================================================
@@ -64,14 +65,190 @@ def get_visual_gripper_body():
     return None
 
 
+# ============================================================================
+# TCP (TOOL CENTER POINT) OFFSET
+# ============================================================================
+# The KUKA ee_link (link 6) is the flange - but the visual gripper extends
+# BELOW it. We need to plan to the TCP (the point between the fingertips)
+# rather than the flange.
+#
+# Gripper geometry:
+#   palm_size[2] = 0.04m (palm thickness in Z)
+#   finger_size[2] = 0.12m (finger length in Z, extending down from palm)
+#   Palm center is at ee_link, fingers extend -Z from palm bottom
+#   TCP is at fingertip level = -(palm/2 + finger_length) = -(0.02 + 0.12) = -0.14m
+#
+# When we want the TCP at position P, the ee_link (flange) must be at P + [0, 0, +0.14]
+
+KUKA_TCP_OFFSET_LOCAL = [0.0, 0.0, -0.14]  # TCP position in ee_link frame (fingertips below flange)
+
+
+def tcp_to_ee_target(tcp_world_pos, ee_world_orn, tcp_offset_local=None):
+    """Convert a desired TCP world position to the required ee_link (flange) position.
+    
+    When planning, we want the FINGERTIPS (TCP) to reach a certain point.
+    But IK solves for the ee_link (flange). This function computes where
+    the flange needs to be so that the TCP ends up at the desired location.
+    
+    Args:
+        tcp_world_pos: Desired TCP position in world frame [x, y, z]
+        ee_world_orn: Desired ee_link orientation as quaternion [x, y, z, w]
+                      (the TCP has the same orientation as ee_link)
+        tcp_offset_local: TCP offset in ee_link local frame [x, y, z].
+                          Default uses KUKA_TCP_OFFSET_LOCAL = [0, 0, -0.14]
+    
+    Returns:
+        ee_world_pos: The ee_link position that puts TCP at tcp_world_pos
+    
+    Math:
+        tcp_world = ee_world + R_ee * tcp_local
+        => ee_world = tcp_world - R_ee * tcp_local
+        
+    Where R_ee is the rotation matrix of the ee_link.
+    """
+    import numpy as np
+    
+    if tcp_offset_local is None:
+        tcp_offset_local = KUKA_TCP_OFFSET_LOCAL
+    
+    tcp_offset_local = np.array(tcp_offset_local)
+    tcp_world_pos = np.array(tcp_world_pos)
+    
+    # Get the rotation matrix from the quaternion
+    # PyBullet quaternion is [x, y, z, w]
+    rot_matrix = np.array(p.getMatrixFromQuaternion(ee_world_orn)).reshape(3, 3)
+    
+    # Transform TCP offset from local to world frame
+    tcp_offset_world = rot_matrix @ tcp_offset_local
+    
+    # ee_world = tcp_world - tcp_offset_world
+    ee_world_pos = tcp_world_pos - tcp_offset_world
+    
+    return list(ee_world_pos)
+
+
+def ee_to_tcp_pos(ee_world_pos, ee_world_orn, tcp_offset_local=None):
+    """Convert current ee_link position to TCP position (inverse of tcp_to_ee_target).
+    
+    Args:
+        ee_world_pos: Current ee_link position in world frame [x, y, z]
+        ee_world_orn: Current ee_link orientation as quaternion [x, y, z, w]
+        tcp_offset_local: TCP offset in ee_link local frame. Default uses KUKA_TCP_OFFSET_LOCAL.
+    
+    Returns:
+        tcp_world_pos: The TCP position in world frame
+    """
+    import numpy as np
+    
+    if tcp_offset_local is None:
+        tcp_offset_local = KUKA_TCP_OFFSET_LOCAL
+    
+    tcp_offset_local = np.array(tcp_offset_local)
+    ee_world_pos = np.array(ee_world_pos)
+    
+    # Get the rotation matrix from the quaternion
+    rot_matrix = np.array(p.getMatrixFromQuaternion(ee_world_orn)).reshape(3, 3)
+    
+    # Transform TCP offset from local to world frame
+    tcp_offset_world = rot_matrix @ tcp_offset_local
+    
+    # tcp_world = ee_world + tcp_offset_world
+    tcp_world_pos = ee_world_pos + tcp_offset_world
+    
+    return list(tcp_world_pos)
+
+
 # Home pose joint configurations for supported robots
 # These are safe neutral positions that avoid collisions with the workspace
 HOME_POSES = {
     # Panda: 7 arm joints + 2 gripper joints (gripper open)
     "panda": [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785, 0.04, 0.04],
-    # KUKA IIWA: 7 arm joints in a neutral upright position
-    "kuka": [0.0, 0.5, 0.0, -1.4, 0.0, 1.2, 0.0]
+    # KUKA IIWA: 7 arm joints - upright position pointing away from chair
+    # Joint order: A1 (base), A2, A3, A4, A5, A6, A7 (wrist)
+    # This pose:
+    #   - A1=0: base pointing forward (+X)
+    #   - A2=-0.4: shoulder slightly back (away from chair)
+    #   - A3=0: no rotation
+    #   - A4=-1.5: elbow bent up (keeps arm high)
+    #   - A5=0: no rotation
+    #   - A6=1.2: wrist angled to keep gripper clear
+    #   - A7=0: no rotation
+    # This keeps the entire arm behind the robot base (negative X side)
+    # and above the chair to avoid any collision with seat/legs.
+    "kuka": [0.0, -0.4, 0.0, -1.5, 0.0, 1.2, 0.0]
 }
+
+
+def get_finger_tcp(gripper_body):
+    """Get the TRUE Tool Center Point (TCP) = midpoint between finger tips.
+    
+    This is the REAL grasp point, not the flange or gripper base.
+    All approach and grasp planning should use this point.
+    
+    Args:
+        gripper_body: PyBullet body ID of the visual gripper
+        
+    Returns:
+        tcp_pos: World position of the TCP (midpoint between fingertips)
+        tcp_orn: Orientation (same as gripper base)
+    """
+    import numpy as np
+    
+    if gripper_body is None:
+        return None, None
+    
+    # Get finger link states (links 0 and 1 are the finger links)
+    left_finger_state = p.getLinkState(gripper_body, 0)
+    right_finger_state = p.getLinkState(gripper_body, 1)
+    
+    left_tip = np.array(left_finger_state[0])
+    right_tip = np.array(right_finger_state[0])
+    
+    # Finger tips are at the BOTTOM of the finger blocks
+    # Finger size Z is 0.12m, link position is at center, so tip is 0.06m below
+    # Account for gripper orientation (fingers may not point straight down)
+    gripper_base_state = p.getBasePositionAndOrientation(gripper_body)
+    gripper_orn = gripper_base_state[1]
+    
+    # The fingers extend in the local -Z direction of the gripper
+    rot_matrix = np.array(p.getMatrixFromQuaternion(gripper_orn)).reshape(3, 3)
+    finger_extension = rot_matrix @ np.array([0, 0, -0.06])  # 6cm below link center = tip
+    
+    left_tip_world = left_tip + finger_extension
+    right_tip_world = right_tip + finger_extension
+    
+    # TCP = midpoint between fingertips
+    tcp_pos = (left_tip_world + right_tip_world) / 2.0
+    
+    return list(tcp_pos), gripper_orn
+
+
+def get_tcp_offset_from_ee(robot_id, ee_link, gripper_body):
+    """Compute the current TCP offset from the EE link in world frame.
+    
+    This is the vector from EE link to the actual finger TCP.
+    Use this to convert between EE commands and finger tip positions.
+    
+    Returns:
+        offset_world: Vector from EE to TCP in world frame [x, y, z]
+    """
+    import numpy as np
+    
+    if gripper_body is None:
+        return [0, 0, 0]
+    
+    # Get current EE position
+    ee_state = p.getLinkState(robot_id, ee_link)
+    ee_pos = np.array(ee_state[0])
+    
+    # Get actual TCP position
+    tcp_pos, _ = get_finger_tcp(gripper_body)
+    if tcp_pos is None:
+        return [0, 0, 0]
+    
+    tcp_pos = np.array(tcp_pos)
+    
+    return list(tcp_pos - ee_pos)
 
 
 def create_visual_gripper():
@@ -121,14 +298,14 @@ def create_visual_gripper():
     # Create the multi-body gripper
     # Link 0: Left finger (prismatic, moves in +X to close)
     # Link 1: Right finger (prismatic, moves in -X to close)
-    # Using very low mass to minimize effect on robot dynamics
+    # ARCHITECTURAL FIX: Use realistic mass for stable contact physics
     gripper_id = p.createMultiBody(
-        baseMass=0.01,  # Very light - just for visual
+        baseMass=0.3,  # Realistic palm mass (was 0.01)
         baseCollisionShapeIndex=palm_col,
         baseVisualShapeIndex=palm_vis,
         basePosition=[0, 0, 1],  # Will be repositioned when attached
         baseOrientation=[0, 0, 0, 1],
-        linkMasses=[0.005, 0.005],  # Light fingers
+        linkMasses=[0.08, 0.08],  # Realistic finger mass (was 0.005)
         linkCollisionShapeIndices=[finger_col, finger_col],
         linkVisualShapeIndices=[finger_vis_left, finger_vis_right],
         linkPositions=[
@@ -155,20 +332,45 @@ def create_visual_gripper():
         ]
     )
     
-    # Set joint dynamics (NOTE: jointLowerLimit/jointUpperLimit are NOT valid
-    # for changeDynamics - limits are set at creation time. We just set damping.)
-    # Open position = 0 (fingers at default spread)
-    # Close position = 0.05 (fingers moved inward) - larger travel for bigger parts
+    # =========================================================================
+    # GRIPPER PHYSICS SETTINGS (ARCHITECTURAL FIX)
+    # =========================================================================
+    # Set proper dynamics on gripper base and fingers for stable contact grasping.
+    # Without these settings, objects slip through fingers or jitter during motion.
+    
+    # Gripper base (palm) dynamics
+    p.changeDynamics(
+        gripper_id, -1,  # -1 = base link
+        lateralFriction=1.5,       # High friction for grip
+        spinningFriction=0.3,      # Resist spinning in grip
+        rollingFriction=0.2,       # Resist rolling
+        restitution=0.0,           # No bounce
+        linearDamping=0.1,         # Damping for stability
+        angularDamping=0.1
+    )
+    
+    # Finger dynamics - same settings for both fingers
+    for joint_idx in [0, 1]:
+        p.changeDynamics(
+            gripper_id, joint_idx,
+            lateralFriction=2.0,       # Very high friction on fingertips
+            spinningFriction=0.5,      # Strong spin resistance
+            rollingFriction=0.3,       # Strong roll resistance
+            restitution=0.0,           # No bounce
+            linearDamping=0.15,        # More damping on fingers
+            angularDamping=0.15,
+            jointDamping=0.5           # Joint damping for smooth motion
+        )
+        # Initialize to open position
+        p.resetJointState(gripper_id, joint_idx, 0.0)
+    
+    # Set joint motor parameters for stronger grip force
     open_val = 0.0
     close_val = 0.05
     
-    for joint_idx in [0, 1]:
-        p.changeDynamics(gripper_id, joint_idx, jointDamping=0.1)
-        # Initialize to open position
-        p.resetJointState(gripper_id, joint_idx, open_val)
-    
     print(f"[GRIPPER] Created visual parallel-jaw gripper (body_id={gripper_id})")
     print(f"[GRIPPER]   Finger joints: [0, 1], open={open_val}, close={close_val}")
+    print(f"[GRIPPER]   Physics: high friction, damping, realistic mass")
     
     return gripper_id, [0, 1], open_val, close_val
 
@@ -510,8 +712,8 @@ def open_gripper(robot, joints, val):
                 p.setJointMotorControl2(
                     gripper_body, j, p.POSITION_CONTROL,
                     open_val,
-                    force=20,
-                    maxVelocity=0.3
+                    force=100,
+                    maxVelocity=1.0
                 )
             except Exception as e:
                 print(f"[WARNING] Could not open visual gripper joint {j}: {e}")
@@ -564,8 +766,8 @@ def close_gripper(robot, joints, val):
                 p.setJointMotorControl2(
                     gripper_body, j, p.POSITION_CONTROL,
                     close_val,
-                    force=30,
-                    maxVelocity=0.3
+                    force=150,
+                    maxVelocity=1.0
                 )
             except Exception as e:
                 print(f"[WARNING] Could not close visual gripper joint {j}: {e}")
@@ -590,29 +792,208 @@ def close_gripper(robot, joints, val):
         step_sim(0.1)
 
 
-def create_grasp_constraint(robot, ee_link, target_body, target_link=-1):
-    """Create a fixed constraint to attach an object to the robot's end-effector.
+# ============================================================================
+# CONTACT-BASED GRASP VALIDATION (ARCHITECTURAL FIX)
+# ============================================================================
+# Validates grasp conditions BEFORE creating constraints.
+# This prevents "ghost grasps" where the object is constrained without
+# actual physical contact between gripper and object.
+
+def validate_grasp_contact(
+    robot_id: int,
+    ee_link: int,
+    target_body: int,
+    gripper_body: int = None,
+    max_distance: float = 0.02,
+    require_finger_contact: bool = True
+) -> Tuple[bool, str, float]:
+    """Validate that gripper is in proper contact with target before grasping.
     
-    This is the core of our constraint-based grasping system. Instead of
-    relying on friction (which can be unreliable), we create a rigid
-    constraint that "welds" the object to the end-effector/gripper.
-    
-    IMPORTANT: The constraint uses proper transform math to compute the
-    child's position in the parent (EE) frame using inverse transforms.
-    This ensures the object attaches exactly where it is relative to the
-    gripper, preventing snaps, drifting, and unrealistic grabbing.
+    ARCHITECTURAL FIX: This function ensures we only create grasp constraints
+    when there is ACTUAL physical proximity/contact, not just when the robot
+    thinks it's in position. This prevents:
+    - Ghost grasps through geometry
+    - Constraints created from too far away
+    - Unrealistic "teleport" grasping
     
     Args:
-        robot: PyBullet body ID of the robot
+        robot_id: PyBullet body ID of the robot
         ee_link: End-effector link index
         target_body: Body ID of the object to grasp
-        target_link: Link index of the object (-1 for base link)
+        gripper_body: Visual gripper body ID (for KUKA)
+        max_distance: Maximum allowed distance (default 2cm)
+        require_finger_contact: If True, require at least one finger contact
         
     Returns:
-        int: Constraint ID if successful, None otherwise
+        Tuple of (is_valid, reason, distance)
+    """
+    import math
+    
+    # CRITICAL: Force collision detection update before checking distances
+    # Without this, getClosestPoints() may return stale/incorrect data
+    p.performCollisionDetection()
+    
+    # Get EE position
+    ee_state = p.getLinkState(robot_id, ee_link)
+    ee_pos = ee_state[0]
+    ee_orn = ee_state[1]
+    
+    # Get object position
+    obj_pos, obj_orn = p.getBasePositionAndOrientation(target_body)
+    
+    # Check 1: Basic distance check
+    # Use closest points for accurate distance measurement
+    # Use larger query distance (0.25m) to ensure we find contacts even if slightly far
+    min_distance = float('inf')
+    finger_min_distance = float('inf')  # Track finger distance separately
+    QUERY_DISTANCE = 0.25  # 25cm query range
+    
+    # Check gripper body vs object FIRST (primary for KUKA visual gripper)
+    if gripper_body is not None:
+        try:
+            # Check gripper FINGERS specifically (not base) - this is what matters for grasp
+            num_gripper_links = p.getNumJoints(gripper_body)
+            print(f"[GRASP DEBUG] Checking {num_gripper_links} gripper links...")
+            for finger_link in range(num_gripper_links):
+                contacts = p.getClosestPoints(
+                    bodyA=gripper_body, bodyB=target_body,
+                    distance=QUERY_DISTANCE, linkIndexA=finger_link
+                )
+                if contacts:
+                    link_min = min(c[8] for c in contacts)
+                    print(f"[GRASP DEBUG]   Link {finger_link}: {link_min*1000:.1f}mm ({len(contacts)} pts)")
+                for contact in contacts:
+                    if contact[8] < finger_min_distance:
+                        finger_min_distance = contact[8]
+                    if contact[8] < min_distance:
+                        min_distance = contact[8]
+            
+            # Also check gripper BASE (link -1)
+            contacts = p.getClosestPoints(
+                bodyA=gripper_body, bodyB=target_body,
+                distance=QUERY_DISTANCE
+            )
+            if contacts:
+                base_min = min(c[8] for c in contacts)
+                print(f"[GRASP DEBUG]   Base (all): {base_min*1000:.1f}mm ({len(contacts)} pts)")
+            for contact in contacts:
+                if contact[8] < min_distance:
+                    min_distance = contact[8]
+            
+            # =====================================================================
+            # REALISM FIX: Object must be BETWEEN the fingers, not just touching base
+            # =====================================================================
+            # A valid grasp requires the object to be gripped between the two fingers.
+            # If the base is close but fingers are far, the object is ON TOP of the 
+            # gripper (palm contact), not BETWEEN the fingers (proper grasp).
+            #
+            # Valid grasp criteria:
+            # 1. At least one finger must be close (<25mm) to the object
+            # 2. OR physics contact detected on a finger
+            # 3. Base-only contact is NOT sufficient for a valid grasp
+            # =====================================================================
+            
+            FINGER_GRASP_THRESHOLD = 0.030  # 30mm - finger must be close for valid grasp
+            
+            # Check if any finger is close enough
+            finger_is_close = finger_min_distance < FINGER_GRASP_THRESHOLD
+            
+            if finger_is_close:
+                # Good - finger is near the object, use finger distance
+                min_distance = finger_min_distance
+                print(f"[GRASP DEBUG] Finger grasp valid: {min_distance*1000:.1f}mm")
+            elif min_distance < 0.005:  # Base is touching
+                # Base is touching but fingers are far - object is ON TOP of gripper, not between fingers
+                print(f"[GRASP DEBUG] WARNING: Base contact but fingers far ({finger_min_distance*1000:.1f}mm)")
+                print(f"[GRASP DEBUG] Object is ON gripper, not BETWEEN fingers - invalid grasp!")
+                # Use finger distance for validation - this will fail if fingers are too far
+                min_distance = finger_min_distance
+            else:
+                # Neither finger nor base is close
+                print(f"[GRASP DEBUG] No valid grasp: finger={finger_min_distance*1000:.1f}mm, base={min_distance*1000:.1f}mm")
+        except Exception as e:
+            print(f"[GRASP DEBUG] Error checking gripper: {e}")
+    
+    # Fallback: Check robot EE vs object
+    if min_distance == float('inf'):
+        try:
+            contacts = p.getClosestPoints(
+                bodyA=robot_id, bodyB=target_body,
+                distance=QUERY_DISTANCE, linkIndexA=ee_link
+            )
+            for contact in contacts:
+                if contact[8] < min_distance:
+                    min_distance = contact[8]
+            print(f"[GRASP DEBUG] Robot EE {robot_id}:{ee_link} -> target {target_body}: min_distance={min_distance:.4f}m")
+        except Exception as e:
+            print(f"[GRASP DEBUG] Error checking EE: {e}")
+    
+    # Check 2: Distance validation
+    if min_distance > max_distance:
+        return False, f"Too far from object ({min_distance:.3f}m > {max_distance}m)", min_distance
+    
+    # Check 3: Finger contact validation (STRICT - REQUIRED for valid grasp)
+    # =========================================================================
+    # REALISTIC GRASP REQUIREMENT: No proximity fallback. No exceptions.
+    # If there's no physics contact between finger and object, grasp is INVALID.
+    # 
+    # Previous code allowed:
+    #   - Proximity heuristics (within Xmm)
+    #   - Base contact (object on top of gripper)
+    # 
+    # New code requires:
+    #   - p.getContactPoints(finger_link, target) returns contacts
+    #   - Period. No fallback.
+    # =========================================================================
+    if require_finger_contact and gripper_body is not None:
+        has_finger_contact = False
+        contact_finger = None
+        contact_count = 0
+        
+        # Force collision detection update
+        p.performCollisionDetection()
+        
+        # Check for actual contact points on FINGER LINKS ONLY
+        num_gripper_links = p.getNumJoints(gripper_body)
+        for finger_link in range(num_gripper_links):
+            contact_points = p.getContactPoints(
+                bodyA=gripper_body, bodyB=target_body,
+                linkIndexA=finger_link  # FINGER LINKS ONLY
+            )
+            if contact_points:
+                has_finger_contact = True
+                contact_finger = finger_link
+                contact_count = len(contact_points)
+                print(f"[GRASP DEBUG] CONTACT: Finger {finger_link} touching target ({contact_count} contact points)")
+                break
+        
+        if has_finger_contact:
+            print(f"[GRASP DEBUG] Valid: finger {contact_finger} has physics contact")
+            return True, f"Grasp valid (finger contact, {contact_count} points)", 0.0
+        else:
+            # NO CONTACT = NO GRASP. Period.
+            print(f"[GRASP DEBUG] INVALID: No finger contact detected")
+            print(f"[GRASP DEBUG] Finger distances: {finger_min_distance*1000:.1f}mm")
+            return False, f"No finger contact (fingers {finger_min_distance*1000:.1f}mm away)", finger_min_distance
+    
+    # Check 4: Validate grasp direction (contact normal should align with approach)
+    # This prevents grasps where we approached but from wrong angle
+    # For now, we just check distance - normal checking is complex
+    
+    return True, f"Grasp validated (distance: {min_distance:.3f}m)", min_distance
+
+
+def create_grasp_constraint(robot, ee_link, target_body, target_link=-1):
+    """
+    Create a fixed constraint (grasp) between the gripper and target object.
+
+    FIX:
+    - Use closest-point pivots between gripper and object so the object is anchored
+      where contact/proximity actually is (between/near the jaws), instead of welding
+      the object's origin to an arbitrary EE frame.
     """
     global _active_grasp_constraint, _visual_gripper
-    
+
     # First, release any existing grasp
     if _active_grasp_constraint is not None:
         try:
@@ -620,68 +1001,81 @@ def create_grasp_constraint(robot, ee_link, target_body, target_link=-1):
         except:
             pass
         _active_grasp_constraint = None
-    
+
     try:
-        # Get parent (EE) pose in world frame
-        ee_state = p.getLinkState(robot, ee_link)
-        ee_pos = ee_state[0]
-        ee_orn = ee_state[1]
-        
-        print(f"[GRIPPER] Attaching object {target_body} to robot EE link {ee_link}")
-        
-        # Get child (object) pose in world frame
-        if target_link == -1:
-            obj_pos, obj_orn = p.getBasePositionAndOrientation(target_body)
+        # 1) Attach to the visual gripper if present (it is constrained to EE already)
+        # 2) Build constraint using closest point pair -> correct visual anchoring
+        parent_body = (_visual_gripper['body_id'] if _visual_gripper is not None else robot)
+        parent_link = (-1 if _visual_gripper is not None else ee_link)
+
+        # Collect closest-point candidates
+        candidates = []
+        try:
+            candidates += list(p.getClosestPoints(parent_body, target_body, distance=0.20, linkIndexA=parent_link))
+        except Exception:
+            pass
+
+        # If gripper is a multibody, also sample finger links
+        if _visual_gripper is not None:
+            try:
+                g_id = _visual_gripper['body_id']
+                for finger_link in range(p.getNumJoints(g_id)):
+                    candidates += list(p.getClosestPoints(g_id, target_body, distance=0.20, linkIndexA=finger_link))
+            except Exception:
+                pass
+
+        if not candidates:
+            raise RuntimeError("No closest points returned between gripper and target")
+
+        # Best = minimum distance
+        best = min(candidates, key=lambda c: c[8])  # contactDistance
+        dist = float(best[8])
+        pos_on_a = best[5]  # world position on gripper/EE
+        pos_on_b = best[6]  # world position on object
+
+        # Parent pose
+        if parent_link == -1:
+            parent_pos, parent_orn = p.getBasePositionAndOrientation(parent_body)
         else:
-            link_state = p.getLinkState(target_body, target_link)
-            obj_pos, obj_orn = link_state[0], link_state[1]
-        
-        # ===================================================================
-        # CORRECT TRANSFORM MATH:
-        # Compute child transform in parent (EE) local frame using:
-        #   T_child_in_parent = T_parent^-1 * T_child_world
-        # 
-        # This is the PROPER way to set parentFramePosition/Orientation.
-        # The old code used world-space offset which caused snapping/drifting.
-        # ===================================================================
-        inv_ee_pos, inv_ee_orn = p.invertTransform(ee_pos, ee_orn)
-        child_pos_in_ee, child_orn_in_ee = p.multiplyTransforms(
-            inv_ee_pos, inv_ee_orn,
-            obj_pos, obj_orn
-        )
-        
-        print(f"[GRIPPER] Object at {[round(x,3) for x in obj_pos]}, EE at {[round(x,3) for x in ee_pos]}")
-        print(f"[GRIPPER] Child in EE frame: pos={[round(x,3) for x in child_pos_in_ee]}")
-        
-        # Create fixed constraint between robot EE and object
-        # parentFramePosition: position of child in parent's local frame
-        # childFramePosition: [0,0,0] - anchor at child's origin
-        # parentFrameOrientation: orientation of child in parent's local frame
+            ls = p.getLinkState(parent_body, parent_link)
+            parent_pos, parent_orn = ls[0], ls[1]
+
+        # Child pose
+        if target_link == -1:
+            child_pos, child_orn = p.getBasePositionAndOrientation(target_body)
+        else:
+            ls = p.getLinkState(target_body, target_link)
+            child_pos, child_orn = ls[0], ls[1]
+
+        inv_parent_pos, inv_parent_orn = p.invertTransform(parent_pos, parent_orn)
+        inv_child_pos, inv_child_orn = p.invertTransform(child_pos, child_orn)
+
+        parent_pivot_local, _ = p.multiplyTransforms(inv_parent_pos, inv_parent_orn, pos_on_a, [0, 0, 0, 1])
+        child_pivot_local, _ = p.multiplyTransforms(inv_child_pos, inv_child_orn, pos_on_b, [0, 0, 0, 1])
+
+        attach_label = "VISUAL GRIPPER" if _visual_gripper is not None else f"robot EE link {ee_link}"
+        print(f"[GRIPPER] Attaching object {target_body} to {attach_label} using closest-point pivots")
+        print(f"[GRIPPER] Closest distance = {dist*1000:.1f}mm")
+
         constraint_id = p.createConstraint(
-            parentBodyUniqueId=robot,
-            parentLinkIndex=ee_link,
+            parentBodyUniqueId=parent_body,
+            parentLinkIndex=parent_link,
             childBodyUniqueId=target_body,
             childLinkIndex=target_link,
             jointType=p.JOINT_FIXED,
             jointAxis=[0, 0, 0],
-            parentFramePosition=child_pos_in_ee,
-            childFramePosition=[0, 0, 0],
-            parentFrameOrientation=child_orn_in_ee,
-            childFrameOrientation=[0, 0, 0, 1]
+            parentFramePosition=parent_pivot_local,
+            childFramePosition=child_pivot_local,
+            parentFrameOrientation=[0, 0, 0, 1],
+            childFrameOrientation=[0, 0, 0, 1],
         )
-        
-        # Set realistic constraint force (5000-20000 range is good)
-        # - Small parts: 5000-8000
-        # - Medium parts (armrests): 8000-12000
-        # - Large parts (seat, backrest): 10000-15000
-        # Too high can cause instability, too low causes drift/lag
-        p.changeConstraint(constraint_id, maxForce=12000)
-        
+
+        p.changeConstraint(constraint_id, maxForce=100000)
+
         _active_grasp_constraint = constraint_id
         print(f"[GRIPPER] Created grasp constraint {constraint_id} for body {target_body}")
-        
         return constraint_id
-        
+
     except Exception as e:
         print(f"[GRIPPER] Failed to create grasp constraint: {e}")
         import traceback

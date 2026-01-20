@@ -94,6 +94,12 @@ def main():
         print(f"[INFO] Spawning chair with damaged part: {damaged}", flush=True)
         parts = spawn_simple_chair(damaged)
         print(f"[INFO] Chair spawned with {len(parts)} parts", flush=True)
+        
+        # DEBUG: Print body IDs for collision debugging
+        print("[DEBUG] Chair body IDs:", flush=True)
+        for name, (bid, _) in parts.items():
+            print(f"  - {name}: body_id={bid}", flush=True)
+            
     except Exception as e:
         print(f"[ERROR] Failed to load robot or spawn chair: {e}", flush=True)
         import traceback
