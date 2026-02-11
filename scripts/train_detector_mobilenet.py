@@ -1,9 +1,18 @@
 """
+Train SSDLite-MobileNetV3-Large for chair part + damage detection.
+Uses synthetic data from scripts/generate_synthetic_data.py.
 
+Usage (GPU recommended):
+    # From repo root, with GPU
+    python scripts/train_detector_mobilenet.py --epochs 100 --batch 16 --ann ./data/synthetic_damage/annotations.json
 
-Usage:
-    
+    # Use train/val split from data generator (recommended)
+    python scripts/train_detector_mobilenet.py --ann ./data/synthetic_damage/annotations_train.json --val_ann ./data/synthetic_damage/annotations_val.json --epochs 100 --batch 16
 
+    # CPU-only (slower)
+    python scripts/train_detector_mobilenet.py --device cpu --batch 4 --epochs 20
+
+Output: models/damage_detection/mobilenet_ssd.pth (used by detect_damage.py)
 ================================================================================
 """
 
@@ -403,67 +412,87 @@ def train_detector(
     ann_path: str,
     img_dir: str,
     out_path: str = "./models/damage_detection/mobilenet_ssd.pth",
+    val_ann_path: Optional[str] = None,
     resize: int = 320,
     batch_size: int = 16,
     epochs: int = 100,
-    lr: float = 1e-4,  # Lowered from 1e-3
+    lr: float = 1e-4,
     weight_decay: float = 5e-4,
-    patience: int = 15,  # Increased from 5
-    log_dir: str = "./outputs"
+    patience: int = 15,
+    log_dir: str = "./outputs",
+    device: str = "auto",
+    use_amp: bool = True,
+    num_workers: int = 0,
 ):
     """
-    training with proper validation loss and better damage detection.
+    Train damage detector. Use GPU (cuda) when available for much faster training.
     """
     
     os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    
+    if device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+    
+    if use_amp and device.type != "cuda":
+        use_amp = False
+        logger.info("AMP disabled (CPU mode)")
     
     logger.info("=" * 80)
-    logger.info("Loading DAMAGE DETECTION TRAINING")
+    logger.info("DAMAGE DETECTION TRAINING")
     logger.info("=" * 80)
     logger.info(f"Model: SSD-MobileNet v3-Large")
     logger.info(f"Classes: {len(CLASSES)} ({len(PARTS)} parts + {len(DAMAGES)} damage types)")
     logger.info(f"Input size: {resize}x{resize}")
-    logger.info(f"Batch size: {batch_size}, Learning rate: {lr}, Epochs: {epochs}")
-    logger.info(f"Damage class weights: 10-12x (was 2-2.5x)")
+    logger.info(f"Batch size: {batch_size}, LR: {lr}, Epochs: {epochs}")
+    logger.info(f"Device: {device} | AMP: {use_amp} | Workers: {num_workers}")
     logger.info("=" * 80)
     
-    # Load dataset
+    # Load train (and optionally val) dataset
     logger.info("Loading dataset...")
-    full_dataset = EnhancedChairDataset(ann_path, img_dir, resize, augment=True)
-    logger.info(f"Total samples: {len(full_dataset)}")
+    train_dataset = EnhancedChairDataset(ann_path, img_dir, resize, augment=True)
+    logger.info(f"Train samples: {len(train_dataset)}")
     
-    # Stratified split to ensure damage types are represented
-    from sklearn.model_selection import StratifiedShuffleSplit
-    damage_counts = [sum(1 for d in item.get('damages', [])) for item in full_dataset.ann]
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    indices = list(range(len(full_dataset)))
-    for train_idx, val_idx in sss.split(indices, damage_counts):
-        train_set = torch.utils.data.Subset(full_dataset, train_idx)
-        val_set = torch.utils.data.Subset(full_dataset, val_idx)
+    if val_ann_path and os.path.isfile(val_ann_path):
+        val_dataset = EnhancedChairDataset(val_ann_path, img_dir, resize, augment=False)
+        train_set = train_dataset
+        val_set = val_dataset
+        logger.info(f"Val samples (from file): {len(val_dataset)}")
+    else:
+        from sklearn.model_selection import StratifiedShuffleSplit
+        damage_counts = [sum(1 for d in item.get('damages', [])) for item in train_dataset.ann]
+        sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        indices = list(range(len(train_dataset)))
+        for train_idx, val_idx in sss.split(indices, damage_counts):
+            train_set = torch.utils.data.Subset(train_dataset, train_idx)
+            val_set = torch.utils.data.Subset(train_dataset, val_idx)
+        logger.info(f"Val samples (split): {len(val_set)}")
+    
     n_train, n_val = len(train_set), len(val_set)
-    logger.info(f"Train: {n_train}, Val: {n_val}")
     
-    # Create weighted sampler
-    train_weights = [full_dataset.sample_weights[i] for i in train_set.indices]
+    if hasattr(train_set, 'indices'):
+        train_weights = [train_dataset.sample_weights[i] for i in train_set.indices]
+    else:
+        train_weights = [train_dataset.sample_weights[i] for i in range(len(train_set))]
     sampler = WeightedRandomSampler(train_weights, len(train_weights), replacement=True)
     
-    # GPU optimization: pin_memory only if CUDA available
-    use_pin_memory = torch.cuda.is_available()
+    use_pin_memory = device.type == "cuda"
     
     train_loader = DataLoader(
         train_set, batch_size=batch_size, sampler=sampler,
-        collate_fn=collate_fn, num_workers=0, pin_memory=use_pin_memory,
+        collate_fn=collate_fn, num_workers=num_workers, pin_memory=use_pin_memory,
         drop_last=True
     )
     val_loader = DataLoader(
         val_set, batch_size=batch_size, shuffle=False,
-        collate_fn=collate_fn, num_workers=0, pin_memory=use_pin_memory,
-        drop_last=True
+        collate_fn=collate_fn, num_workers=num_workers, pin_memory=use_pin_memory,
+        drop_last=False
     )
     
-    # Setup device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     if torch.cuda.is_available():
         logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
@@ -510,7 +539,7 @@ def train_detector(
     }
     
     # Training loop
-    scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
     for epoch in range(1, epochs + 1):
         # =====================================================================
         # TRAIN PHASE
@@ -656,42 +685,44 @@ def train_detector(
         json.dump(history, f, indent=2)
     logger.info(f"Training logs saved to {history_path}")
     
-    # Plot training curves
+    # Plot training curves (epoch, train/val loss, part/damage detections)
     plot_path = os.path.join(log_dir, "training_curve.png")
     try:
-        plt.figure(figsize=(15, 5))
-        
-        plt.subplot(1, 3, 1)
-        plt.plot(history["train_loss"], label="Train Loss", marker='o')
-        plt.plot(history["val_loss"], label="Val Loss", marker='s')
-        plt.axvline(history["best_epoch"]-1, color='r', linestyle='--', 
-                    label=f"Best Epoch {history['best_epoch']}")
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.title("Training & Validation Loss")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        plt.subplot(1, 3, 2)
-        plt.plot(history["val_part_detections"], label="Parts", marker='o', color='blue')
-        plt.xlabel("Epoch")
-        plt.ylabel("Detections/Image")
-        plt.title("Validation Part Detections")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        plt.subplot(1, 3, 3)
-        plt.plot(history["val_damage_detections"], label="Damages", marker='o', color='red')
-        plt.xlabel("Epoch")
-        plt.ylabel("Detections/Image")
-        plt.title("Validation Damage Detections")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
+        epochs_x = list(range(1, len(history["train_loss"]) + 1))
+        best_epoch = history["best_epoch"]
+
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        fig.suptitle("Damage detector training", fontsize=12, fontweight="bold")
+
+        axes[0].plot(epochs_x, history["train_loss"], label="Train Loss", marker='o', markersize=3)
+        axes[0].plot(epochs_x, history["val_loss"], label="Val Loss", marker='s', markersize=3)
+        axes[0].axvline(best_epoch, color='r', linestyle='--', alpha=0.8, label=f"Best epoch {best_epoch}")
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("Loss")
+        axes[0].set_title("Train & validation loss")
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+
+        axes[1].plot(epochs_x, history["val_part_detections"], label="Parts", marker='o', color='blue', markersize=3)
+        axes[1].axvline(best_epoch, color='r', linestyle='--', alpha=0.5)
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("Detections / image")
+        axes[1].set_title("Val part detections")
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+
+        axes[2].plot(epochs_x, history["val_damage_detections"], label="Damages", marker='o', color='red', markersize=3)
+        axes[2].axvline(best_epoch, color='r', linestyle='--', alpha=0.5)
+        axes[2].set_xlabel("Epoch")
+        axes[2].set_ylabel("Detections / image")
+        axes[2].set_title("Val damage detections")
+        axes[2].legend()
+        axes[2].grid(True, alpha=0.3)
+
         plt.tight_layout()
         plt.savefig(plot_path, dpi=150, bbox_inches='tight')
         plt.close()
-        logger.info(f"Training curve saved to {plot_path}")
+        logger.info(f"Training graph saved to {plot_path}")
     except Exception as e:
         logger.warning(f"Could not save training plot: {e}")
     
@@ -705,6 +736,7 @@ def train_detector(
     logger.info(f"Best validation loss: {history['best_val_loss']:.4f}")
     logger.info(f"Final damage detections: {history['val_damage_detections'][-1]:.2f}/img")
     logger.info(f"Model saved to: {final_save_path}")
+    logger.info(f"Graph & logs: {plot_path} | {history_path}")
     logger.info("=" * 80)
 
 
@@ -714,17 +746,27 @@ def train_detector(
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Loading traning Model")
-    parser.add_argument("--ann", type=str, default="./data/synthetic_damage/annotations.json")
-    parser.add_argument("--img_dir", type=str, default="./data/synthetic_damage/images")
-    parser.add_argument("--batch", type=int, default=16, dest="batch_size")
+    parser = argparse.ArgumentParser(description="Train chair damage detector (SSD-MobileNetV3)")
+    parser.add_argument("--ann", type=str, default="./data/synthetic_damage/annotations.json",
+                        help="Path to training annotations (or annotations_train.json if using split)")
+    parser.add_argument("--val_ann", type=str, default=None,
+                        help="Path to validation annotations (e.g. annotations_val.json). If not set, 20%% of --ann is used as val.")
+    parser.add_argument("--img_dir", type=str, default="./data/synthetic_damage/images",
+                        help="Directory containing images referenced in annotations")
+    parser.add_argument("--batch", type=int, default=16, dest="batch_size",
+                        help="Batch size (use 16-32 on GPU, 4-8 on CPU)")
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--resize", type=int, default=320)
+    parser.add_argument("--resize", type=int, default=320, help="Input size (must match detect_damage.py)")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
-    parser.add_argument("--patience", type=int, default=15)
+    parser.add_argument("--patience", type=int, default=15, help="Early stopping patience")
     parser.add_argument("--out", type=str, default="./models/damage_detection/mobilenet_ssd.pth")
     parser.add_argument("--log_dir", type=str, default="./outputs")
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"],
+                        help="Device: auto (use GPU if available), cuda, or cpu")
+    parser.add_argument("--no_amp", action="store_true", help="Disable mixed precision (use if you see NaN loss)")
+    parser.add_argument("--num_workers", type=int, default=0,
+                        help="DataLoader workers (0=main process; use 2-4 on GPU for faster loading)")
     
     args = parser.parse_args()
     
@@ -732,11 +774,15 @@ if __name__ == "__main__":
         ann_path=args.ann,
         img_dir=args.img_dir,
         out_path=args.out,
+        val_ann_path=args.val_ann,
         resize=args.resize,
         batch_size=args.batch_size,
         epochs=args.epochs,
         lr=args.lr,
         weight_decay=args.weight_decay,
         patience=args.patience,
-        log_dir=args.log_dir
+        log_dir=args.log_dir,
+        device=args.device,
+        use_amp=not args.no_amp,
+        num_workers=args.num_workers,
     )

@@ -153,35 +153,74 @@ This will start:
 
 ### Option B: Command Line Interface
 
-#### Step 1: Generate Synthetic Training Data
+---
+
+## Retrain the damage detector on your GPU
+
+To get **better detection when users upload chair images**, generate more synthetic data and retrain the model on your GPU. The detector (used by the upload pipeline) is **SSDLite-MobileNetV3**; training uses the same preprocessing as inference for consistent results.
+
+### 1. Generate synthetic training data
+
+From the **repo root** (with `.venv` activated):
+
+```bash
+# Recommended: 5000+ images with train/val split and optional balance
+python scripts/generate_synthetic_data.py --samples 5000 --multi_damage_ratio 0.2 --val_ratio 0.2 --output_dir ./data/synthetic_damage/
+```
+
+**Options:**
+| Option | Default | Description |
+|--------|--------|-------------|
+| `--samples` | 3000 | Number of synthetic images |
+| `--multi_damage_ratio` | 0.15 | Fraction of images with 2–3 damages |
+| `--val_ratio` | 0.2 | Fraction for validation (writes `annotations_train.json` and `annotations_val.json`) |
+| `--balance` | off | Add extra samples so each (part, damage_type) has at least `--min_per_class` |
+| `--output_dir` | ./data/synthetic_damage/ | Output directory |
+
+**Outputs:**
+- `data/synthetic_damage/images/*.jpg` — Synthetic chair images (parts + damage types)
+- `data/synthetic_damage/annotations.json` — All annotations
+- `data/synthetic_damage/annotations_train.json` — Train split (when `--val_ratio` > 0)
+- `data/synthetic_damage/annotations_val.json` — Val split
+- `data/synthetic_damage/stats.json` — Counts per part and damage type
+
+### 2. Train the model on GPU
+
+```bash
+# Use GPU (auto), mixed precision, and train/val files from step 1
+python scripts/train_detector_mobilenet.py --ann ./data/synthetic_damage/annotations_train.json --val_ann ./data/synthetic_damage/annotations_val.json --img_dir ./data/synthetic_damage/images --epochs 100 --batch 16 --out ./models/damage_detection/mobilenet_ssd.pth
+```
+
+**GPU-focused options:**
+| Option | Default | Description |
+|--------|--------|-------------|
+| `--device` | auto | `auto` (use CUDA if available), `cuda`, or `cpu` |
+| `--batch` | 16 | Batch size (e.g. 16–32 on GPU, 4–8 on CPU) |
+| `--num_workers` | 0 | DataLoader workers (2–4 on GPU can speed up loading) |
+| `--no_amp` | off | Disable mixed precision if you see NaN loss |
+
+**Output:**
+- `models/damage_detection/mobilenet_ssd.pth` — Best model by validation loss (used by `detect_damage.py` and the upload pipeline)
+- `outputs/training_curve.png` — Train/val loss and detection counts
+- `outputs/training_logs.json` — Full history
+
+**Model architecture:** SSDLite with MobileNetV3-Large backbone; **13 classes:** 8 chair parts (seat, back, front_left_leg, front_right_leg, back_left_leg, back_right_leg, armrest_left, armrest_right) + 5 damage types (missing, cracked, broken, loose, scratched). Input size 320×320 (resize + center pad); preprocessing must match `scripts/detect_damage.py`.
+
+---
+
+### Option B (continued): Other CLI steps
+
+#### Step 1 (alternate): Generate data via main.py
 ```bash
 python main.py --generate-data --samples 1000
 ```
+Or use `scripts/generate_synthetic_data.py` directly (see “Retrain the damage detector” above).
 
-**Options:**
-- `--samples N` — Number of synthetic chair images to generate (default: 1000)
-
-**Output:**
-- `data/synthetic_damage/images/` — Synthetic chair images
-- `data/synthetic_damage/annotations.json` — Bounding boxes and damage labels
-
-#### Step 2: Train the MobileNet SSD Detector Model
+#### Step 2 (alternate): Train via main.py
 ```bash
 python main.py --train-frcnn --epochs 20 --batch 8
 ```
-
-**Options:**
-- `--epochs N` — Number of training epochs (default: 20)
-- `--batch N` — Batch size (default: 2, adjust based on GPU memory)
-
-**Model Architecture:**
-- **Base Model:** SSDLite with MobileNetV3-Large backbone
-- **Classes Detected:** 8 chair parts + 5 damage types = 13 classes
-  - **Parts:** seat, back, front_left_leg, front_right_leg, back_left_leg, back_right_leg, armrest_left, armrest_right
-  - **Damages:** missing, cracked, broken, loose, scratched
-
-**Output:**
-- `models/damage_detection/mobilenet_ssd.pth` — Trained model weights
+Or use `scripts/train_detector_mobilenet.py` directly for GPU and train/val split (see above).
 
 #### Step 3: Run the Full Pipeline (Detection + Repair Planning)
 

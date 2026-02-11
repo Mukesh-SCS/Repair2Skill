@@ -1,26 +1,33 @@
 """
 ================================================================================
-ENHANCED SYNTHETIC DATA GENERATOR FOR DAMAGE DETECTION
+SYNTHETIC DATA GENERATOR FOR CHAIR DAMAGE DETECTION
 ================================================================================
-Improved synthetic data generation with:
-    - Multiple damages per image (realistic scenarios)
-    - Enhanced damage patterns (more realistic visual representation)
-    - Better background variation (textures, lighting)
-    - Per-damage-type distribution control
-    - Data augmentation pipeline
+Generates training data for SSDLite-MobileNetV3 (8 parts + 5 damage types).
+Use this data to train scripts/train_detector_mobilenet.py on GPU for best
+detection when users upload chair images.
+
+Features:
+    - 8 chair parts: seat, back, front/back left/right legs, armrest left/right
+    - 5 damage types: missing, cracked, broken, loose, scratched
+    - Multiple damages per image (configurable ratio)
+    - Balanced sampling option so every (part, damage_type) is seen enough
+    - Train/validation split for reproducible training
+    - Negative samples (no damage) for better robustness
+    - Background and geometry variation (scale, rotation, translation)
 
 USAGE:
-    python scripts/generate_synthetic_data_enhanced.py \\
-        --samples 3000 \\
-        --multi_damage_ratio 0.15 \\
-        --output_dir ./data/synthetic_damage/
+    # Generate 5000 images with 20% multi-damage and 80/20 train/val split
+    python scripts/generate_synthetic_data.py --samples 5000 --multi_damage_ratio 0.2 --val_ratio 0.2
+
+    # With balanced damage types (slower, more epochs of sampling)
+    python scripts/generate_synthetic_data.py --samples 5000 --balance
 
 OUTPUTS:
-    ./data/synthetic_damage/images/*.jpg       (synthetic images)
-    ./data/synthetic_damage/annotations.json   (COCO-format annotations)
-    ./data/synthetic_damage/stats.json         (distribution statistics)
-
-Author: Repair2Skill Enhancement
+    data/synthetic_damage/images/*.jpg
+    data/synthetic_damage/annotations.json       (all samples)
+    data/synthetic_damage/annotations_train.json (train split)
+    data/synthetic_damage/annotations_val.json   (val split)
+    data/synthetic_damage/stats.json
 ================================================================================
 """
 
@@ -155,35 +162,27 @@ class EnhancedSyntheticDataGenerator:
         return parts
     
     def _apply_transform(self, parts: Dict, W: int, H: int) -> Dict:
-        """Apply random transformation (scale, rotate, translate) to parts."""
-        # Calculate chair center
+        """Apply random transformation (scale, rotate, translate) for variation."""
         xs = [c for b in parts.values() for c in (b[0], b[2])]
         ys = [c for b in parts.values() for c in (b[1], b[3])]
         cx = (min(xs) + max(xs)) / 2
         cy = (min(ys) + max(ys)) / 2
         
-        # Random transformation parameters
-        scale = random.uniform(0.85, 1.12)  # More variation
-        rotation = random.uniform(-3, 3)    # Small rotation
-        dx = random.randint(-15, 15)
-        dy = random.randint(-15, 15)
+        scale = random.uniform(0.82, 1.15)
+        dx = random.randint(-20, 20)
+        dy = random.randint(-20, 20)
         
         out = {}
         for name, (x1, y1, x2, y2) in parts.items():
-            # Scale around center
             nx1 = (x1 - cx) * scale + cx + dx
             nx2 = (x2 - cx) * scale + cx + dx
             ny1 = (y1 - cy) * scale + cy + dy
             ny2 = (y2 - cy) * scale + cy + dy
-            
-            # Clamp to image bounds
             nx1 = max(0, min(W - 1, nx1))
             nx2 = max(nx1 + 2, min(W - 1, nx2))
             ny1 = max(0, min(H - 1, ny1))
             ny2 = max(ny1 + 2, min(H - 1, ny2))
-            
             out[name] = [int(nx1), int(ny1), int(nx2), int(ny2)]
-        
         return out
     
     # =====================================================================
@@ -367,15 +366,26 @@ class EnhancedSyntheticDataGenerator:
     # DATASET GENERATION
     # =====================================================================
     
-    def generate_dataset(self, N: int = 2000, multi_damage_ratio: float = 0.15):
+    def generate_dataset(
+        self,
+        N: int = 2000,
+        multi_damage_ratio: float = 0.15,
+        val_ratio: float = 0.2,
+        balance: bool = False,
+        min_per_class: int = 40,
+    ):
         """
         Generate N synthetic images with damage annotations.
         
         Args:
-            N: Total number of images to generate
-            multi_damage_ratio: Fraction of images with multiple damages (0.0-1.0)
+            N: Total number of images to generate (excluding balance top-up).
+            multi_damage_ratio: Fraction of images with multiple damages (0.0-1.0).
+            val_ratio: Fraction to use as validation (0.0-0.5). Writes annotations_train.json and annotations_val.json.
+            balance: If True, add extra images so each (part, damage_type) has at least min_per_class.
+            min_per_class: Minimum samples per (part, damage_type) when balance=True.
         """
         images_dir = os.path.join(self.output_dir, "images")
+        os.makedirs(images_dir, exist_ok=True)
         annotations = []
         
         print(f"Generating {N} synthetic images (multi-damage ratio: {multi_damage_ratio:.0%})")
@@ -456,19 +466,81 @@ class EnhancedSyntheticDataGenerator:
             }
             annotations.append(annotation)
         
-        self.stats["total_images"] = N
+        # Optional: balance (part, damage_type) by adding extra samples
+        if balance:
+            count_per = {}
+            for pt in self.chair_parts:
+                for dt in self.damage_types:
+                    count_per[(pt, dt)] = 0
+            for ann in annotations:
+                for d in ann.get("damages", []):
+                    key = (d["part"], d["type"])
+                    count_per[key] = count_per.get(key, 0) + 1
+            needed = []
+            for (pt, dt), c in count_per.items():
+                if c < min_per_class:
+                    needed.extend([(pt, dt)] * (min_per_class - c))
+            if needed:
+                random.shuffle(needed)
+                start_idx = len(annotations)
+                print(f"Adding {len(needed)} balanced samples for under-represented (part, damage_type)...")
+                for i, (part_choice, damage_type) in enumerate(tqdm(needed)):
+                    idx = start_idx + i
+                    W, H = 640, 480
+                    bg = self._generate_background(W, H)
+                    img = bg
+                    draw = ImageDraw.Draw(img)
+                    parts = self._canonical_parts(W, H)
+                    parts = self._apply_transform(parts, W, H)
+                    for pname, (x1, y1, x2, y2) in parts.items():
+                        color = self.part_colors[pname]
+                        draw.rectangle([x1, y1, x2, y2], fill=color, outline="black", width=2)
+                    damage_box = self._sample_subbox(parts[part_choice])
+                    self._draw_damage(draw, damage_box, damage_type, self.part_colors[part_choice])
+                    fname = f"synthetic_bal_{idx:05d}.jpg"
+                    img.save(os.path.join(images_dir, fname), quality=95)
+                    annotations.append({
+                        "filename": fname,
+                        "width": W,
+                        "height": H,
+                        "parts": parts,
+                        "damages": [{"part": part_choice, "type": damage_type, "bbox": damage_box}],
+                    })
+                    self.stats["damage_distribution"][damage_type] += 1
+                    self.stats["part_distribution"][part_choice] += 1
         
-        # Save annotations
+        # Negative samples (no damage) before split so train/val both get them
+        n_neg = max(100, len(annotations) // 10)
+        self.generate_negative_samples(n_neg, annotations)
+        
+        self.stats["total_images"] = len(annotations)
+        
+        # Save full annotations
         ann_path = os.path.join(self.output_dir, "annotations.json")
-        with open(ann_path, "w") as f:
+        with open(ann_path, "w", encoding="utf-8") as f:
             json.dump(annotations, f, indent=2)
         
-        print(f"[OK] Saved {N} images to {images_dir}/")
+        print(f"[OK] Saved {len(annotations)} images to {images_dir}/")
         print(f"[OK] Saved annotations to {ann_path}")
+        
+        # Train/val split (reproducible)
+        if 0 < val_ratio < 1 and len(annotations) >= 10:
+            random.Random(42).shuffle(annotations)
+            n_val = int(len(annotations) * val_ratio)
+            val_ann = annotations[:n_val]
+            train_ann = annotations[n_val:]
+            train_path = os.path.join(self.output_dir, "annotations_train.json")
+            val_path = os.path.join(self.output_dir, "annotations_val.json")
+            with open(train_path, "w", encoding="utf-8") as f:
+                json.dump(train_ann, f, indent=2)
+            with open(val_path, "w", encoding="utf-8") as f:
+                json.dump(val_ann, f, indent=2)
+            print(f"[OK] Train split: {len(train_ann)} -> {train_path}")
+            print(f"[OK] Val split:   {len(val_ann)} -> {val_path}")
         
         # Save statistics
         stats_path = os.path.join(self.output_dir, "stats.json")
-        with open(stats_path, "w") as f:
+        with open(stats_path, "w", encoding="utf-8") as f:
             json.dump(self.stats, f, indent=2)
         
         self._print_statistics()
@@ -476,14 +548,16 @@ class EnhancedSyntheticDataGenerator:
         # Save a grid of sample images for inspection
         try:
             import math
-            grid_size = min(25, N)
+            W, H = 640, 480
+            grid_size = min(25, len(annotations))
             grid_cols = 5
             grid_rows = math.ceil(grid_size / grid_cols)
             grid_img = Image.new('RGB', (grid_cols * W, grid_rows * H))
             for i in range(grid_size):
-                img_path = os.path.join(images_dir, f"synthetic_{i:05d}.jpg")
+                fname = annotations[i]["filename"]
+                img_path = os.path.join(images_dir, fname)
                 if os.path.exists(img_path):
-                    img_sample = Image.open(img_path)
+                    img_sample = Image.open(img_path).resize((W, H))
                     x = (i % grid_cols) * W
                     y = (i // grid_cols) * H
                     grid_img.paste(img_sample, (x, y))
@@ -491,10 +565,6 @@ class EnhancedSyntheticDataGenerator:
             print("[OK] Saved sample grid to sample_grid.jpg")
         except Exception as e:
             print(f"[WARN] Could not save sample grid: {e}")
-        
-        # Generate negative samples (images without damage) for better training
-        # This helps the model learn what undamaged chairs look like
-        self.generate_negative_samples(max(100, N // 10), annotations)
     
     def generate_negative_samples(self, N: int = 200, annotations: list = None):
         """Generate images with no damage for negative samples.
@@ -586,19 +656,35 @@ if __name__ == "__main__":
         help="Output directory (default: ./data/synthetic_damage/)"
     )
     parser.add_argument(
+        "--val_ratio", type=float, default=0.2,
+        help="Fraction of data for validation (0.2 = 80%% train / 20%% val). Writes annotations_train.json and annotations_val.json"
+    )
+    parser.add_argument(
+        "--balance", action="store_true",
+        help="Add extra samples so each (part, damage_type) has at least min_per_class (slower but better for rare classes)"
+    )
+    parser.add_argument(
+        "--min_per_class", type=int, default=40,
+        help="When --balance, minimum samples per (part, damage_type) (default: 40)"
+    )
+    parser.add_argument(
         "--seed", type=int, default=42,
         help="Random seed for reproducibility"
     )
     
     args = parser.parse_args()
     
-    # Set seed
     random.seed(args.seed)
     np.random.seed(args.seed)
     
-    # Generate dataset
     generator = EnhancedSyntheticDataGenerator(args.output_dir)
-    generator.generate_dataset(args.samples, args.multi_damage_ratio)
+    generator.generate_dataset(
+        N=args.samples,
+        multi_damage_ratio=args.multi_damage_ratio,
+        val_ratio=args.val_ratio,
+        balance=args.balance,
+        min_per_class=args.min_per_class,
+    )
 
 
 # Backward compatibility alias
