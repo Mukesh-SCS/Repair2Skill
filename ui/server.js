@@ -452,47 +452,19 @@ app.post('/upload', upload.single('file'), (req, res) => {
       });
     }
 
-    // Use smart_score if available (from updated detection script), otherwise calculate it
-    const scoredPairs = pairs.map(pair => {
-      let score;
-      if (pair.smart_score !== undefined) {
-        // Use pre-calculated smart_score from detection script
-        score = parseFloat(pair.smart_score);
-      } else {
-        // Fallback: calculate score using same logic as visual guide
-        const overlap = pair.overlap_iou || 0.0;
-        const overlapBonus = overlap > 0.15 ? Math.max(0.5, overlap) : 0.3;
-        const partConf = parseFloat(pair.part_confidence || 0.0);
-        const damageConf = parseFloat(pair.damage_confidence || 0.0);
-        score = partConf * damageConf * overlapBonus;
-      }
-      return { ...pair, score };
-    });
+    const ts = Date.now();
+    const detectionPath = path.join(UPLOAD_DIR, `detection_${ts}.json`);
+    const planFile = `repair_plan_${ts}.json`;
+    const planPath = path.join(UPLOAD_DIR, planFile);
+    const damageReportPath = path.join(UPLOAD_DIR, `damage_report_${ts}.json`);
+    fs.writeFileSync(detectionPath, JSON.stringify(detection, null, 2));
 
-    // Sort by score (highest first) and pick the best one
-    scoredPairs.sort((a, b) => b.score - a.score);
-    const pair = scoredPairs[0];
-
-    console.log(`[SERVER] All detected pairs with scores:`, scoredPairs.map(p => ({
-      part: p.part,
-      damage: p.damage_type,
-      score: p.score.toFixed(4),
-      part_conf: p.part_confidence,
-      damage_conf: p.damage_confidence,
-      overlap: p.overlap_iou
-    })));
-
-    const damagedPart = pair.part;
-    const damageType = pair.damage_type;
-
-    console.log(`[SERVER] Detected damage: ${damagedPart} (${damageType})`);
-
-    /* ---- Stage 3: Repair Planning ---- */
+    /* ---- Stage 3: Damage report + deterministic plan + validate (Steps 1–3) ---- */
     const planProc = spawn(PYTHON, [
-      `${ROOT}/scripts/generate_repair_plan.py`,
-      '--furniture', 'chair',
-      '--part', damagedPart,
-      '--damage', damageType
+      `${ROOT}/scripts/build_repair_plan_from_detection.py`,
+      '--detection', path.resolve(detectionPath),
+      '--plan', path.resolve(planPath),
+      '--damage-report', path.resolve(damageReportPath)
     ], { cwd: ROOT });
 
     let planOut = '';
@@ -506,28 +478,43 @@ app.post('/upload', upload.single('file'), (req, res) => {
 
     planProc.on('close', (code) => {
       if (code !== 0) {
-        console.error(`[SERVER] Plan generation failed with code ${code}`);
+        console.error(`[SERVER] Plan build failed with code ${code}`);
         console.error(`[SERVER] Error output: ${planErr}`);
-        return res.status(500).json({ error: `Plan generation failed: ${planErr || 'Unknown error'}` });
+        let errMsg = planErr || 'Unknown error';
+        try {
+          const lastLine = planOut.trim().split('\n').pop();
+          const j = JSON.parse(lastLine);
+          if (j.error) errMsg = j.error;
+        } catch (_) {}
+        return res.status(500).json({ error: `Plan build failed: ${errMsg}` });
       }
+
+      let result;
+      try {
+        const lastLine = planOut.trim().split('\n').pop();
+        result = JSON.parse(lastLine);
+      } catch (e) {
+        console.error(`[SERVER] Failed to parse plan script output: ${e}`);
+        console.error(`[SERVER] Raw output: ${planOut}`);
+        return res.status(500).json({ error: 'Failed to parse plan script output', details: planOut });
+      }
+
+      if (result.error) {
+        return res.status(400).json({ error: result.error, details: result });
+      }
+
+      const damagedPart = result.damaged_part;
+      const planPathResolved = result.plan_path || planPath;
+      console.log(`[SERVER] Plan saved to: ${planPathResolved}, damaged part: ${damagedPart}`);
 
       let plan;
       try {
-        plan = JSON.parse(planOut.trim());
-      } catch (e) {
-        console.error(`[SERVER] Failed to parse plan output: ${e}`);
-        console.error(`[SERVER] Raw output: ${planOut}`);
-        return res.status(500).json({ error: 'Failed to parse plan output', details: planOut });
+        plan = JSON.parse(fs.readFileSync(planPathResolved, 'utf8'));
+      } catch (_) {
+        plan = { repair_sequence: [] };
       }
 
-      const planFile = `repair_plan_${Date.now()}.json`;
-      const planPath = path.join(UPLOAD_DIR, planFile);
-      fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
-      console.log(`[SERVER] Plan saved to: ${planPath}`);
-
-      /* ---- Stage 4: Visual Guide ---- */
-      const detectionPath = path.join(UPLOAD_DIR, `detection_${Date.now()}.json`);
-      fs.writeFileSync(detectionPath, JSON.stringify(detection, null, 2));
+      /* ---- Stage 4: Visual Guide (uses detection for detected_pairs) ---- */
 
       const guideName = `guide_${Date.now()}.png`;
       const guidePath = path.join(ROOT, 'data/visual_guides', guideName);
@@ -585,13 +572,13 @@ app.post('/upload', upload.single('file'), (req, res) => {
             fs.writeFileSync(cameraParamsPath, JSON.stringify(currentCamera));
             console.log(`[SERVER] Camera params saved to: ${cameraParamsPath}`);
             
-            // Start simulation automatically
-            console.log(`[SERVER] Auto-starting simulation with plan: ${planPath}`);
+            // Start simulation automatically (one sim per session; previous killed above)
+            console.log(`[SERVER] Auto-starting simulation with plan: ${planPathResolved}`);
             console.log(`[SERVER] Screenshot will be saved to: ${screenshotPath}`);
             console.log(`[SERVER] Damaged part: ${damagedPart}`);
             
             // Use absolute paths for better compatibility
-            const absPlanPath = path.resolve(planPath);
+            const absPlanPath = path.resolve(planPathResolved);
             const absScreenshotPath = path.resolve(screenshotPath);
             const absCameraParamsPath = path.resolve(cameraParamsPath);
             

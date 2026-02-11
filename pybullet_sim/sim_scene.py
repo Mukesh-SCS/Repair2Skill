@@ -11,17 +11,24 @@ from .sim_connection import get_client
 logger = logging.getLogger(__name__)
 
 # Chair layout: part name -> (center_xyz, half_extents_xyz, color_rgba)
-# All parts are boxes. Legs/armrests use thicker half-extents so they are visible in the GUI.
+# Proportions tuned for a more chair-like look (Option A). All parts are boxes.
 CHAIR_PARTS = {
-    "seat": ((0.6, 0.0, 0.42), (0.2, 0.175, 0.025), (0.6, 0.45, 0.3, 1.0)),
-    "back": ((0.6, 0.0, 0.62), (0.2, 0.035, 0.18), (0.5, 0.4, 0.35, 1.0)),
-    "front_left_leg": ((0.45, -0.15, 0.2), (0.04, 0.04, 0.2), (0.4, 0.3, 0.2, 1.0)),
-    "front_right_leg": ((0.45, 0.15, 0.2), (0.04, 0.04, 0.2), (0.4, 0.3, 0.2, 1.0)),
-    "back_left_leg": ((0.75, -0.15, 0.2), (0.04, 0.04, 0.2), (0.45, 0.32, 0.22, 1.0)),
-    "back_right_leg": ((0.75, 0.15, 0.2), (0.04, 0.04, 0.2), (0.45, 0.32, 0.22, 1.0)),
-    "armrest_left": ((0.6, -0.2, 0.55), (0.2, 0.035, 0.08), (0.55, 0.42, 0.38, 1.0)),
-    "armrest_right": ((0.6, 0.2, 0.55), (0.2, 0.035, 0.08), (0.55, 0.42, 0.38, 1.0)),
+    "seat": ((0.6, 0.0, 0.43), (0.22, 0.19, 0.03), (0.55, 0.42, 0.32, 1.0)),
+    "back": ((0.6, 0.0, 0.64), (0.22, 0.04, 0.20), (0.5, 0.38, 0.32, 1.0)),
+    "front_left_leg": ((0.44, -0.16, 0.20), (0.035, 0.035, 0.21), (0.38, 0.28, 0.20, 1.0)),
+    "front_right_leg": ((0.44, 0.16, 0.20), (0.035, 0.035, 0.21), (0.38, 0.28, 0.20, 1.0)),
+    "back_left_leg": ((0.76, -0.16, 0.20), (0.035, 0.035, 0.21), (0.42, 0.30, 0.22, 1.0)),
+    "back_right_leg": ((0.76, 0.16, 0.20), (0.035, 0.035, 0.21), (0.42, 0.30, 0.22, 1.0)),
+    "armrest_left": ((0.6, -0.21, 0.54), (0.21, 0.04, 0.07), (0.52, 0.40, 0.35, 1.0)),
+    "armrest_right": ((0.6, 0.21, 0.54), (0.21, 0.04, 0.07), (0.52, 0.40, 0.35, 1.0)),
 }
+
+# Non-repairable visual supports (not in CHAIR_PARTS): crossbars under seat. Option A realism.
+# List of (center_xyz, half_extents_xyz, color_rgba). Fixed to seat, never removed.
+CROSSBARS = [
+    ((0.44, 0.0, 0.32), (0.02, 0.035, 0.035), (0.35, 0.26, 0.18, 1.0)),   # front
+    ((0.76, 0.0, 0.32), (0.02, 0.035, 0.035), (0.38, 0.28, 0.20, 1.0)),   # back
+]
 
 PARENT_MAP = {
     "seat": None,
@@ -113,6 +120,32 @@ class ChairScene:
                 physicsClientId=self.cid,
             )
             self.constraints[part_name].append(cid)
+
+        # Non-repairable crossbars (visual only, fixed to seat)
+        seat_id = self.bodies["seat"]
+        orn = [0, 0, 0, 1]
+        pos_seat, orn_seat = self.original_poses["seat"]
+        for center, half_ext, color in CROSSBARS:
+            body_id = _create_box(
+                self.cid,
+                half_ext,
+                center,
+                orn,
+                mass=0.0,
+                color_rgba=color,
+            )
+            inv_p, inv_orn_p = p.invertTransform(pos_seat, orn_seat)
+            parent_frame_pos, parent_frame_orn = p.multiplyTransforms(inv_p, inv_orn_p, center, orn)
+            p.createConstraint(
+                seat_id, -1, body_id, -1,
+                p.JOINT_FIXED,
+                jointAxis=[0, 0, 0],
+                parentFramePosition=parent_frame_pos,
+                childFramePosition=[0, 0, 0],
+                parentFrameOrientation=parent_frame_orn,
+                childFrameOrientation=[0, 0, 0, 1],
+                physicsClientId=self.cid,
+            )
 
         if self.damaged_part and self.damaged_part in self.bodies:
             self.recolor(self.damaged_part, (1.0, 0.2, 0.2, 1.0))
