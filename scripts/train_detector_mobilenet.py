@@ -347,22 +347,20 @@ def build_model(num_classes: int, use_pretrained: bool = True) -> nn.Module:
     if use_pretrained:
         try:
             from torchvision.models.detection import SSDLite320_MobileNet_V3_Large_Weights
-            # Load with pretrained weights - torchvision handles head replacement
             model = ssdlite320_mobilenet_v3_large(
                 weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT
             )
-            
-            # Replace the classification head for our custom number of classes
-            # SSD head structure: head.classification_head
-            in_channels = model.head.classification_head.module_list[-1].in_channels
-            num_anchors = model.head.classification_head.num_columns
-            
-            # Replace classification head with correct num_classes
-            model.head.classification_head = nn.Sequential(
-                *list(model.head.classification_head.module_list[:-1]),
-                nn.Conv2d(in_channels, num_classes * num_anchors, kernel_size=1)
-            )
-            
+            # SSD classification head: 6 branches (module_list), each branch ends with Conv2d(in_ch, num_classes*num_anchors, 1)
+            # Each branch is Sequential; the last layer is Conv2d at index 1. Replace that Conv2d per branch.
+            head = model.head.classification_head
+            num_anchors = head.num_columns  # 91 for COCO; output per branch is num_classes*num_anchors
+            # Default 546 = 91*6, so 6 anchors per location
+            num_anchors_per_loc = 6
+            new_out = num_classes * num_anchors_per_loc
+            for seq in head.module_list:
+                old_conv = seq[1]  # Conv2d
+                in_ch = old_conv.in_channels
+                seq[1] = nn.Conv2d(in_ch, new_out, kernel_size=1)
             logger.info(f"✓ Loaded pretrained backbone, replaced head for {num_classes} classes")
         except Exception as e:
             logger.warning(f"Could not modify pretrained model: {e}")
@@ -494,11 +492,12 @@ def train_detector(
     )
     
     logger.info(f"Using device: {device}")
-    if torch.cuda.is_available():
+    if device.type == "cuda":
         logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
         logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
     else:
         logger.info("Running on CPU - training will be slower")
+        logger.info("To use GPU: install PyTorch with CUDA (e.g. pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118) and re-run")
     
     # Build model with pretrained weights
     model = build_model(len(CLASSES), use_pretrained=True)
