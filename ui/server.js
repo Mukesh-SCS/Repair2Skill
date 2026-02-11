@@ -114,8 +114,8 @@ app.get('/sim-stream.jpg', (req, res) => {
 let simProcess = null;
 let screenshotInterval = null;
 
-// Store current camera parameters - set to user's preferred defaults
-let currentCamera = { dist: 1.70, yaw: 180.0, pitch: 9.0 };
+// Default camera: show both robot (left) and chair (right). dist 2.4, yaw 55°, pitch -25°
+let currentCamera = { dist: 2.4, yaw: 55.0, pitch: -25.0 };
 
 // Endpoint to update camera parameters
 app.post('/update-camera', (req, res) => {
@@ -252,7 +252,7 @@ app.post('/start-default-sim', (req, res) => {
 
   simProcess.stderr.on('data', (data) => {
     simError += data.toString();
-    console.error(`[DEFAULT-SIM ERROR] ${data.toString().trim()}`);
+    console.log(`[DEFAULT-SIM] ${data.toString().trim()}`);
   });
 
   simProcess.on('close', (code) => {
@@ -338,7 +338,7 @@ app.post('/start-sim-stream', (req, res) => {
 
   simProcess.stderr.on('data', (data) => {
     simError += data.toString();
-    console.error(`[SIM ERROR] ${data.toString().trim()}`);
+    console.log(`[SIM] ${data.toString().trim()}`);
   });
 
   simProcess.on('close', (code) => {
@@ -617,7 +617,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
             });
 
             simProcess.stderr.on('data', (data) => {
-              console.error(`[AUTO-SIM ERROR] ${data.toString().trim()}`);
+              console.log(`[AUTO-SIM] ${data.toString().trim()}`);
             });
 
             simProcess.on('close', (code) => {

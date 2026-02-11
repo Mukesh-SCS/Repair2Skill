@@ -1,444 +1,189 @@
-"""Execute high-level repair-plan actions in the PyBullet scene.
-
-COMPLETE FIX: Handles static parts, proper removal, and exact positioning.
+"""
+sim_plan_executor.py — Execute repair plan steps: inspect, remove, replace, tighten, clean.
+Uses scene.detach/attach and gripper grasp constraint.
 """
 
+import logging
 import pybullet as p
-import json
-import time
-import math
-from sim_robot import (
-    move_ee, open_gripper, close_gripper, 
-    create_grasp_constraint, release_grasp, 
-    get_visual_gripper_body, move_to_home
-)
-from sim_connection import step_sim
 
-try:
-    from collision_aware_motion import get_obstacle_ids_from_parts
-    COLLISION_AWARE_ENABLED = True
-    print(f"[STARTUP] COLLISION_AWARE_ENABLED = True")
-except ImportError as e:
-    COLLISION_AWARE_ENABLED = False
-    print(f"[STARTUP] COLLISION_AWARE_ENABLED = False")
+from .sim_connection import get_client, step_sim
+from . import sim_robot
+from . import sim_scene
 
+logger = logging.getLogger(__name__)
 
-def load_json(path):
-    """Load a JSON file from disk."""
-    with open(path) as f:
-        return json.load(f)
+# Motion constants (meters, seconds) - longer duration so robot motion is visible in GUI
+APPROACH_HEIGHT_OFFSET = 0.05
+MOVE_DURATION = 1.5
+DROP_ZONE = (0.6, 0.5, 0.25)
+WIGGLE_AMPLITUDE = 0.02
+WIGGLE_STEPS = 30
+SIM_HZ = 240.0
+OPEN_VAL_DEFAULT = 0.04
+CLOSE_VAL_DEFAULT = 0.0
 
 
-def get_pos(part_handle):
-    """Return (pos, orn) for a part."""
-    if isinstance(part_handle, tuple):
-        body, link = part_handle
-        if link == -1:
-            return p.getBasePositionAndOrientation(body)
-        ls = p.getLinkState(body, link)
-        return ls[0], ls[1]
-    return p.getBasePositionAndOrientation(part_handle)
-
-
-def recolor(part_handle, color):
-    """Change the color of a part for visual feedback."""
-    body, link = part_handle
-    p.changeVisualShape(body, link, rgbaColor=color)
-
-
-def safe_call(fn, *args, timeout=12, **kwargs):
-    """Call function with timeout warning."""
-    t0 = time.time()
-    try:
-        fn(*args, **kwargs)
-    except Exception as e:
-        print(f"[SIM] safe_call exception in {fn.__name__}: {e}")
-        return False
-    dt = time.time() - t0
-    if dt > timeout:
-        print(f"[SIM] safe_call: {fn.__name__} took {dt:.1f}s")
-    return True
-
-
-def make_part_pickable(part_body, part_name):
-    """Make a static part pickable by changing its dynamics.
-    
-    Since PyBullet doesn't allow changing mass of existing bodies,
-    we modify the dynamics to make it behave as if it has mass.
-    
-    Args:
-        part_body: Body ID of the part
-        part_name: Name for logging
-        
-    Returns:
-        bool: True if successful
+def execute_step(robot_id, ee_link, gripper_joints, scene, step, open_val=None, close_val=None, cid=None):
     """
-    try:
-        # CRITICAL: Change mass to make part pickable
-        # Chair parts are created with mass=0 (static) by default
-        part_mass = 0.5  # 500g - light but graspable
-        
-        p.changeDynamics(
-            part_body, -1,
-            mass=part_mass,
-            lateralFriction=1.0,
-            spinningFriction=0.2,
-            rollingFriction=0.1,
-            linearDamping=0.05,
-            angularDamping=0.05
-        )
-        
-        print(f"[MAKE_PICKABLE] Made {part_name} (body {part_body}) dynamic with mass={part_mass}kg")
-        step_sim(0.1)
-        return True
-        
-    except Exception as e:
-        print(f"[MAKE_PICKABLE] Error: {e}")
-        return False
-
-
-def force_remove_part(part_body, part_name, parts):
-    """Forcefully remove a part from simulation.
-    
-    Used when pickup fails - we still need to clear the damaged part.
-    
-    Args:
-        part_body: Body ID to remove
-        part_name: Name for logging
-        parts: Parts dictionary to update
-        
-    Returns:
-        bool: True if removed
+    Execute one repair step. Returns True if step was handled (even if target_part missing).
     """
-    try:
-        print(f"[FORCE_REMOVE] Removing {part_name} (body {part_body})")
-        p.removeBody(part_body)
-        if part_name in parts:
-            del parts[part_name]
-        step_sim(0.1)
-        return True
-    except Exception as e:
-        print(f"[FORCE_REMOVE] Error: {e}")
-        return False
-
-
-def simple_pick_up(robot, ee_link, gripper, open_val, close_val, target_body, target_pos):
-    """Pick up a part with VERY aggressive approach."""
-    print(f"[SIMPLE_PICK] Picking up body {target_body} at {[round(x,3) for x in target_pos]}")
-    
-    # Open gripper WIDE
-    open_gripper(robot, gripper, open_val)
-    step_sim(0.2)
-    
-    # Hover above (20cm)
-    hover_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.20]
-    print(f"[SIMPLE_PICK] Hover: {[round(x,3) for x in hover_pos]}")
-    move_ee(robot, ee_link, hover_pos, steps=150)
-    step_sim(0.15)
-    
-    # Descend CLOSE (1cm above center - VERY AGGRESSIVE)
-    grasp_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.01]
-    print(f"[SIMPLE_PICK] Descend CLOSE: {[round(x,3) for x in grasp_pos]}")
-    move_ee(robot, ee_link, grasp_pos, steps=150)
-    step_sim(0.3)  # Extra settling
-    
-    # Close gripper FIRMLY
-    print(f"[SIMPLE_PICK] Closing gripper...")
-    close_gripper(robot, gripper, close_val)
-    step_sim(0.5)  # LONG settling time
-    
-    # Create constraint
-    print(f"[SIMPLE_PICK] Creating constraint...")
-    cid = create_grasp_constraint(robot, ee_link, target_body, -1)
-    
     if cid is None:
-        print(f"[SIMPLE_PICK] FAILED - constraint creation failed")
-        return False
-    
-    # Lift
-    lift_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.35]
-    print(f"[SIMPLE_PICK] Lifting: {[round(x,3) for x in lift_pos]}")
-    move_ee(robot, ee_link, lift_pos, steps=150)
-    step_sim(0.2)
-    
-    print(f"[SIMPLE_PICK] SUCCESS! Constraint={cid}")
+        cid = get_client()
+    open_val = open_val if open_val is not None else OPEN_VAL_DEFAULT
+    close_val = close_val if close_val is not None else CLOSE_VAL_DEFAULT
+    action = (step.get("action_type") or "").strip().lower()
+    target_part = (step.get("target_part") or "").strip()
+    if not target_part:
+        logger.warning("Step %s has no target_part, skipping", step.get("step_id"))
+        return True
+    if target_part not in sim_scene.CHAIR_PARTS:
+        logger.warning("Step %s target_part '%s' not in chair parts, skipping", step.get("step_id"), target_part)
+        return True
+
+    if action == "inspect":
+        return _do_inspect(robot_id, ee_link, scene, target_part, cid)
+    if action == "remove":
+        return _do_remove(robot_id, ee_link, gripper_joints, scene, target_part, open_val, close_val, cid)
+    if action == "replace":
+        return _do_replace(robot_id, ee_link, gripper_joints, scene, target_part, open_val, close_val, cid)
+    if action in ("tighten", "clean"):
+        return _do_tighten_clean(robot_id, ee_link, scene, target_part, cid)
+    logger.warning("Unknown action_type '%s', skipping step", action)
     return True
 
 
-def simple_place(robot, ee_link, gripper, open_val, target_pos):
-    """Place object at target position."""
-    print(f"[SIMPLE_PLACE] Placing at {[round(x,3) for x in target_pos]}")
-    
-    hover_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.30]
-    move_ee(robot, ee_link, hover_pos, steps=150)
-    step_sim(0.1)
-    
-    place_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.10]
-    move_ee(robot, ee_link, place_pos, steps=150)
-    step_sim(0.1)
-    
-    release_grasp()
-    step_sim(0.1)
-    
-    open_gripper(robot, gripper, open_val)
-    step_sim(0.2)
-    
-    retract_pos = [target_pos[0], target_pos[1], target_pos[2] + 0.35]
-    move_ee(robot, ee_link, retract_pos, steps=150)
-    step_sim(0.1)
-    
-    print(f"[SIMPLE_PLACE] Done!")
-
-
-def spawn_replacement_part(parts, original_part_name, original_positions):
-    """Spawn replacement part in staging area."""
-    if original_part_name not in original_positions:
-        print(f"[SPAWN] No original position for {original_part_name}")
+def _approach_part(robot_id, ee_link, scene, part_name, cid, height_offset=0.0):
+    """Move EE above the part (optional height_offset in z)."""
+    pos, _ = scene.get_part_pose(part_name)
+    if pos is None:
         return False
-    
-    try:
-        staging_pos = [0.30, 0.75, 0.10]
-        
-        is_leg = "leg" in original_part_name.lower()
-        
-        if is_leg:
-            size = [0.05, 0.05, 0.45]  # Upright leg
-            color = [0.2, 0.8, 0.2, 1]
-            mass = 0.5
-            staging_pos[2] = size[2] / 2  # Half height above ground
-        elif "seat" in original_part_name.lower():
-            size = [0.45, 0.45, 0.05]
-            color = [0.2, 0.8, 0.2, 1]
-            mass = 2.0
-        elif "back" in original_part_name.lower():
-            size = [0.05, 0.45, 0.5]
-            color = [0.2, 0.8, 0.2, 1]
-            mass = 1.5
-        elif "armrest" in original_part_name.lower():
-            size = [0.6, 0.05, 0.05]
-            color = [0.2, 0.8, 0.2, 1]
-            mass = 0.3
-        else:
-            print(f"[SPAWN] Unknown part type: {original_part_name}")
-            return False
-        
-        print(f"[SPAWN] Creating replacement for '{original_part_name}'")
-        print(f"[SPAWN] Size: {size}, Mass: {mass}kg, Position: {staging_pos}")
-        
-        from sim_scene import create_dynamic_block
-        replacement_body = create_dynamic_block(size, staging_pos, color, mass=mass)
-        
-        p.resetBasePositionAndOrientation(replacement_body, staging_pos, [0, 0, 0, 1])
-        
-        replacement_name = f"{original_part_name}_replacement"
-        parts[replacement_name] = (replacement_body, -1)
-        original_positions[replacement_name] = staging_pos
-        
-        step_sim(0.3)
-        
-        final_pos, final_orn = p.getBasePositionAndOrientation(replacement_body)
-        print(f"[SPAWN] Created '{replacement_name}' (body={replacement_body})")
-        print(f"[SPAWN] Position: {[round(x,3) for x in final_pos]}, Orientation: {[round(x,3) for x in final_orn]}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"[SPAWN] Error: {e}")
-        import traceback
-        traceback.print_exc()
+    approach = [pos[0], pos[1], pos[2] + APPROACH_HEIGHT_OFFSET + height_offset]
+    orn = p.getQuaternionFromEuler([0, 0, 0])
+    sim_robot.move_ee(robot_id, ee_link, approach, orn, cid)
+    step_sim(MOVE_DURATION, SIM_HZ, blocking=True)
+    return True
+
+
+def _do_inspect(robot_id, ee_link, scene, target_part, cid):
+    """Move EE near part and highlight it."""
+    scene.recolor(target_part, (1.0, 1.0, 0.3, 1.0))
+    ok = _approach_part(robot_id, ee_link, scene, target_part, cid)
+    step_sim(0.5, SIM_HZ, blocking=True)
+    scene.recolor(target_part, (0.6, 0.45, 0.3, 1.0))
+    return ok
+
+
+def _do_remove(robot_id, ee_link, gripper_joints, scene, target_part, open_val, close_val, cid):
+    """Move to part, close gripper, detach, then immediately grasp (no step between detach and grasp)."""
+    body_id = scene.part_body_id(target_part)
+    if body_id is None:
+        logger.warning("remove: no body for part %s", target_part)
         return False
+    pos, orn = scene.get_part_pose(target_part)
+    if pos is None:
+        return False
+    # 1. Move robot to part while part is still attached
+    approach = [pos[0], pos[1], pos[2] + APPROACH_HEIGHT_OFFSET]
+    orn_flat = p.getQuaternionFromEuler([0, 0, 0])
+    jpos = sim_robot.move_ee(robot_id, ee_link, approach, orn_flat, cid)
+    if jpos is None:
+        logger.warning("remove: IK failed for approach to %s", target_part)
+    step_sim(MOVE_DURATION, SIM_HZ, blocking=True)
+    sim_robot.open_gripper(robot_id, gripper_joints, open_val, cid)
+    step_sim(0.3, SIM_HZ, blocking=True)
+    down = [pos[0], pos[1], pos[2] + 0.03]
+    sim_robot.move_ee(robot_id, ee_link, down, orn_flat, cid)
+    step_sim(MOVE_DURATION, SIM_HZ, blocking=True)
+    sim_robot.close_gripper(robot_id, gripper_joints, close_val, cid)
+    step_sim(0.3, SIM_HZ, blocking=True)
+    # 2. Detach part from chair (no physics step yet)
+    scene.detach(target_part)
+    # 3. Immediately create grasp constraint so part is held by robot before any physics step
+    grasp_id = sim_robot.make_grasp_constraint(robot_id, ee_link, body_id, -1, cid)
+    if grasp_id is None:
+        logger.warning("remove: grasp constraint failed for %s", target_part)
+        return False
+    step_sim(0.5, SIM_HZ, blocking=True)
+    # 4. Move to drop zone and release
+    drop_above = [DROP_ZONE[0], DROP_ZONE[1], DROP_ZONE[2] + 0.15]
+    sim_robot.move_ee(robot_id, ee_link, drop_above, orn_flat, cid)
+    step_sim(MOVE_DURATION, SIM_HZ, blocking=True)
+    sim_robot.move_ee(robot_id, ee_link, list(DROP_ZONE), orn_flat, cid)
+    step_sim(0.4, SIM_HZ, blocking=True)
+    sim_robot.release_grasp_constraint(grasp_id, cid)
+    sim_robot.open_gripper(robot_id, gripper_joints, open_val, cid)
+    step_sim(0.4, SIM_HZ, blocking=True)
+    return True
 
 
-def show_working_animation(robot, ee_link, parts, part_name, original_positions=None):
-    """Animate working on a part."""
-    if part_name not in parts:
-        return
-    
-    try:
-        target_pos, _ = get_pos(parts[part_name])
-        if target_pos is None or abs(target_pos[0]) > 5:
-            if original_positions and part_name in original_positions:
-                target_pos = original_positions[part_name]
+def _do_replace(robot_id, ee_link, gripper_joints, scene, target_part, open_val, close_val, cid):
+    """Spawn replacement, grasp it, move to original pose, attach, release."""
+    # If the part is still attached (LLM skipped "remove"), detach it first so we don't have two bodies for the same part.
+    if scene.constraints.get(target_part):
+        logger.info("replace: part %s still attached; detaching first (missing 'remove' step)", target_part)
+        scene.detach(target_part)
+        step_sim(0.5, SIM_HZ, blocking=True)
+    original_pos, original_orn = scene.original_poses.get(target_part, (None, None))
+    if original_pos is None:
+        original_pos, original_orn = scene.get_part_pose(target_part)
+        if original_pos is None:
+            # Use CHAIR_PARTS default pose for this part
+            if target_part in sim_scene.CHAIR_PARTS:
+                center = sim_scene.CHAIR_PARTS[target_part][0]
+                original_pos, original_orn = list(center), [0, 0, 0, 1]
             else:
-                return
-    except Exception:
-        return
-    
-    side_offset = 0.40 if target_pos[1] < 0 else -0.40
-    hover_pos = [target_pos[0], target_pos[1] + side_offset, 0.60]
-    move_ee(robot, ee_link, hover_pos, steps=80)
-    
-    work_pos = [target_pos[0], target_pos[1] + side_offset * 0.7, 0.45]
-    move_ee(robot, ee_link, work_pos, steps=60)
-    
-    for _ in range(3):
-        step_sim(0.1)
-    
-    move_ee(robot, ee_link, hover_pos, steps=60)
+                logger.warning("replace: no original pose for %s", target_part)
+                return False
+    replacement_id = scene.spawn_replacement(target_part)
+    if replacement_id is None:
+        logger.warning("replace: spawn_replacement failed for %s", target_part)
+        return False
+    step_sim(0.2, SIM_HZ, blocking=True)
+    bin_above = [PARTS_BIN_POS[0], PARTS_BIN_POS[1], PARTS_BIN_POS[2] + 0.1]
+    orn_flat = p.getQuaternionFromEuler([0, 0, 0])
+    sim_robot.move_ee(robot_id, ee_link, bin_above, orn_flat, cid)
+    step_sim(MOVE_DURATION, SIM_HZ, blocking=True)
+    sim_robot.open_gripper(robot_id, gripper_joints, open_val, cid)
+    step_sim(0.15, SIM_HZ, blocking=True)
+    sim_robot.move_ee(robot_id, ee_link, list(PARTS_BIN_POS), orn_flat, cid)
+    step_sim(0.25, SIM_HZ, blocking=True)
+    sim_robot.close_gripper(robot_id, gripper_joints, close_val, cid)
+    step_sim(0.15, SIM_HZ, blocking=True)
+    grasp_id = sim_robot.make_grasp_constraint(robot_id, ee_link, replacement_id, -1, cid)
+    if grasp_id is None:
+        logger.warning("replace: grasp failed for replacement %s", target_part)
+        return False
+    step_sim(0.2, SIM_HZ, blocking=True)
+    above_original = [original_pos[0], original_pos[1], original_pos[2] + 0.12]
+    sim_robot.move_ee(robot_id, ee_link, above_original, orn_flat, cid)
+    step_sim(MOVE_DURATION, SIM_HZ, blocking=True)
+    at_original = [original_pos[0], original_pos[1], original_pos[2] + 0.02]
+    sim_robot.move_ee(robot_id, ee_link, at_original, original_orn, cid)
+    step_sim(0.4, SIM_HZ, blocking=True)
+    sim_robot.release_grasp_constraint(grasp_id, cid)
+    sim_robot.open_gripper(robot_id, gripper_joints, open_val, cid)
+    step_sim(0.1, SIM_HZ, blocking=True)
+    p.resetBasePositionAndOrientation(replacement_id, original_pos, original_orn, physicsClientId=cid)
+    step_sim(0.1, SIM_HZ, blocking=True)
+    scene.attach(target_part, (original_pos, original_orn), body_id=replacement_id)
+    step_sim(0.3, SIM_HZ, blocking=True)
+    return True
 
 
-def execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, original_positions=None):
-    """Execute a single repair step."""
-    action = step.get("type") or step.get("action_type") or step.get("action")
-    part = step.get("target_part")
-    
-    if not action or not part:
-        return
-    
-    action = action.lower()
-    
-    if part not in parts and part != "":
-        print(f"[STEP] Part '{part}' not in scene")
-        return
-    
-    # ========================================================================
-    # INSPECT
-    # ========================================================================
-    if action == "inspect":
-        print(f"  -> Inspecting {part}...")
-        recolor(parts[part], (1, 1, 0, 1))
-        safe_call(show_working_animation, robot, ee_link, parts, part, original_positions)
-        recolor(parts[part], (0.6, 0.4, 0.2, 1))
-        step_sim(0.5)
-    
-    # ========================================================================
-    # REPLACE - Complete workflow
-    # ========================================================================
-    elif action == "replace":
-        print(f"  -> REPLACING {part}...")
-        
-        target_body, _ = parts[part]
-        target_pos, _ = p.getBasePositionAndOrientation(target_body)
-        
-        # PHASE 1: Remove damaged part
-        print(f"  -> Phase 1: Removing damaged {part}...")
-        
-        # CRITICAL FIX: Make part pickable (change from static to dynamic)
-        print(f"  -> Making {part} pickable...")
-        make_part_pickable(target_body, part)
-        step_sim(0.2)
-        
-        # Move robot to home
-        print(f"  -> Moving robot to home...")
-        move_to_home(robot, robot_type="kuka")
-        step_sim(0.3)
-        
-        recolor(parts[part], (1, 0, 0, 1))
-        
-        # Try to pick up
-        pickup_success = simple_pick_up(robot, ee_link, gripper, open_val, close_val, target_body, target_pos)
-        
-        if pickup_success:
-            # Successfully picked up - move to drop zone
-            drop_zone = [1.0, 0.0, 0.25]
-            simple_place(robot, ee_link, gripper, open_val, drop_zone)
-            print(f"  -> Phase 1: Damaged part removed via pickup")
-        else:
-            # Pickup failed - force remove
-            print(f"  -> Phase 1: Pickup failed, force removing...")
-        
-        # Always force remove to ensure it's gone
-        force_remove_part(target_body, part, parts)
-        step_sim(0.3)
-        
-        # PHASE 2: Spawn replacement
-        print(f"  -> Phase 2: Spawning replacement...")
-        
-        if spawn_replacement_part(parts, part, original_positions):
-            replacement_name = f"{part}_replacement"
-            print(f"  -> Replacement spawned as '{replacement_name}'")
-            
-            if replacement_name in parts:
-                recolor(parts[replacement_name], (0, 1, 0, 1))
-                
-                rep_body, _ = parts[replacement_name]
-                rep_pos, _ = p.getBasePositionAndOrientation(rep_body)
-                print(f"  -> Replacement at: {[round(x,3) for x in rep_pos]}")
-                
-                step_sim(0.5)
-                
-                # PHASE 3: Install replacement
-                print(f"  -> Phase 3: Installing replacement...")
-                
-                # Move to home
-                move_to_home(robot, robot_type="kuka")
-                step_sim(0.3)
-                
-                # Pickup replacement
-                if simple_pick_up(robot, ee_link, gripper, open_val, close_val, rep_body, rep_pos):
-                    
-                    if part in original_positions:
-                        install_pos = original_positions[part]
-                        print(f"  -> Installing at: {[round(x,3) for x in install_pos]}")
-                        
-                        # Move to hover above install
-                        hover_install = [install_pos[0], install_pos[1], install_pos[2] + 0.40]
-                        move_ee(robot, ee_link, hover_install, steps=150)
-                        step_sim(0.2)
-                        
-                        # Descend to install
-                        final_install = [install_pos[0], install_pos[1], install_pos[2] + 0.15]
-                        move_ee(robot, ee_link, final_install, steps=150)
-                        step_sim(0.2)
-                        
-                        # Release constraint FIRST
-                        release_grasp()
-                        step_sim(0.1)
-                        
-                        # CRITICAL FIX: Snap to EXACT position with correct orientation
-                        # This fixes the position drift issue
-                        upright_orn = [0, 0, 0, 1]
-                        p.resetBasePositionAndOrientation(rep_body, install_pos, upright_orn)
-                        
-                        # Make the replacement STATIC (part of chair)
-                        p.changeDynamics(rep_body, -1, mass=0)
-                        step_sim(0.1)
-                        
-                        # Verify final position
-                        final_pos, final_orn = p.getBasePositionAndOrientation(rep_body)
-                        error = math.sqrt(sum((final_pos[i] - install_pos[i])**2 for i in range(3)))
-                        print(f"  -> Positioning error: {error*1000:.1f}mm")
-                        print(f"  -> Final pos: {[round(x,3) for x in final_pos]}")
-                        print(f"  -> Final orn: {[round(x,3) for x in final_orn]}")
-                        
-                        # Update parts dictionary
-                        recolor(parts[replacement_name], (0.6, 0.4, 0.2, 1))
-                        parts[part] = (rep_body, -1)
-                        del parts[replacement_name]
-                        if replacement_name in original_positions:
-                            del original_positions[replacement_name]
-                        
-                        print(f"  -> {part} successfully replaced!")
-                        
-                        # Open gripper and retract
-                        open_gripper(robot, gripper, open_val)
-                        step_sim(0.2)
-                        
-                        retract = [install_pos[0], install_pos[1], install_pos[2] + 0.45]
-                        move_ee(robot, ee_link, retract, steps=150)
-                        step_sim(0.2)
-        
-        step_sim(0.5)
-    
-    # ========================================================================
-    # OTHER ACTIONS
-    # ========================================================================
-    elif action in ["tighten", "fix"]:
-        print(f"  -> Tightening/Fixing {part}...")
-        recolor(parts[part], (0, 0, 1, 1))
-        show_working_animation(robot, ee_link, parts, part, original_positions)
-        recolor(parts[part], (0.6, 0.4, 0.2, 1))
-        step_sim(0.5)
-    
-    elif action == "clean":
-        print(f"  -> Cleaning {part}...")
-        recolor(parts[part], (0.5, 0.8, 1, 1))
-        show_working_animation(robot, ee_link, parts, part, original_positions)
-        recolor(parts[part], (0.6, 0.4, 0.2, 1))
-        step_sim(0.5)
-    
-    else:
-        print(f"  -> Processing {part} ({action})...")
-        if part in parts:
-            safe_call(show_working_animation, robot, ee_link, parts, part, original_positions)
-        step_sim(0.5)
+def _do_tighten_clean(robot_id, ee_link, scene, target_part, cid):
+    """Move to part and wiggle."""
+    ok = _approach_part(robot_id, ee_link, scene, target_part, cid)
+    if not ok:
+        return False
+    pos, _ = scene.get_part_pose(target_part)
+    if pos is None:
+        return False
+    for i in range(WIGGLE_STEPS):
+        dx = WIGGLE_AMPLITUDE if i % 2 == 0 else -WIGGLE_AMPLITUDE
+        sim_robot.move_ee(robot_id, ee_link, [pos[0] + dx, pos[1], pos[2] + APPROACH_HEIGHT_OFFSET], p.getQuaternionFromEuler([0, 0, 0]), cid)
+        step_sim(0.05, SIM_HZ, blocking=True)
+    return True
+
+
+# For replace: parts bin position (must match sim_scene)
+PARTS_BIN_POS = sim_scene.PARTS_BIN_POS

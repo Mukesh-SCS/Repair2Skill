@@ -37,10 +37,10 @@ function App() {
   const [showStream, setShowStream] = useState(false);
   const [streamPlanPath, setStreamPlanPath] = useState('');
   
-  // Camera controls - set to user's preferred defaults
-  const [cameraDist, setCameraDist] = useState(1.70);
-  const [cameraYaw, setCameraYaw] = useState(180.0);
-  const [cameraPitch, setCameraPitch] = useState(9.0);
+  // Camera defaults: show both robot and chair (dist 2.4, yaw 55°, pitch -25°)
+  const [cameraDist, setCameraDist] = useState(2.4);
+  const [cameraYaw, setCameraYaw] = useState(55.0);
+  const [cameraPitch, setCameraPitch] = useState(-25.0);
 
   // Update camera parameters
   const updateCamera = useCallback(async (dist, yaw, pitch) => {

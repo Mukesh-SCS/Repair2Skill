@@ -25,7 +25,7 @@ from typing import Dict, Any
 # Add the parent directory to sys.path to import utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.openai_utils import generate_repair_plan as call_openai_plan
+from utils.openai_utils import generate_repair_plan as call_openai_plan, _ensure_remove_before_replace
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -67,7 +67,8 @@ def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: st
                 "description": f"Install new {damaged_part}.",
                 "tools": ["screwdriver"]
             })
-
+    # Ensure sim-friendly order: remove before replace for each part
+    plan["repair_sequence"] = _ensure_remove_before_replace(plan.get("repair_sequence", []))
     return plan
 
 

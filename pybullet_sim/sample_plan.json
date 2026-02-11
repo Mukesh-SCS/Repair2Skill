@@ -1,0 +1,25 @@
+{
+  "repair_sequence": [
+    {
+      "step_id": 1,
+      "action_type": "inspect",
+      "target_part": "back_left_leg",
+      "description": "Inspect the damaged back left leg",
+      "tools": ["visual_inspection"]
+    },
+    {
+      "step_id": 2,
+      "action_type": "remove",
+      "target_part": "back_left_leg",
+      "description": "Remove the damaged leg from the seat",
+      "tools": ["gripper", "screwdriver"]
+    },
+    {
+      "step_id": 3,
+      "action_type": "replace",
+      "target_part": "back_left_leg",
+      "description": "Install new back left leg and attach to seat",
+      "tools": ["gripper", "screwdriver"]
+    }
+  ]
+}

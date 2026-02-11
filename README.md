@@ -57,12 +57,6 @@ REPAIR2SKILL/
 │   └── repair_graph_*.json
 │
 ├── pybullet_sim/                    # Simulation Engine
-│   ├── __init__.py
-│   ├── run_simulation.py            # Main simulation runner
-│   ├── sim_connection.py            # PyBullet connection & camera
-│   ├── sim_plan_executor.py         # Repair step execution
-│   ├── sim_robot.py                 # Robot loading & IK
-│   └── sim_scene.py                 # Chair scene construction
 │
 ├── scripts/
 │   ├── capture_image.py             # Camera capture utility

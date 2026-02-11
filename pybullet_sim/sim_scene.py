@@ -1,242 +1,203 @@
-"""Scene creation utilities used by the simulation demos.
-
-The scene functions are intentionally tiny: create simple geometric
-blocks or spawn a procedural chair and return a mapping of named
-parts to simulation handles (body id, link index) used by the executor.
+"""
+sim_scene.py — Procedural chair from boxes; dynamic bodies and fixed constraints.
+Units: meters, Z-up. Chair center ~ (0.6, 0, 0).
 """
 
+import logging
 import pybullet as p
 
-def block(size, pos, color, mass=0):
-    """Create a box and return its body id.
+from .sim_connection import get_client
 
-    Args:
-        size: [x, y, z] full extents of the box.
-        pos: base position to place the box (center of mass).
-        color: RGBA tuple for the visual shape.
-        mass: Mass of the body. 0 = static (default), >0 = dynamic (movable).
+logger = logging.getLogger(__name__)
+
+# Chair layout: part name -> (center_xyz, half_extents_xyz, color_rgba)
+# All parts are boxes. Legs/armrests use thicker half-extents so they are visible in the GUI.
+CHAIR_PARTS = {
+    "seat": ((0.6, 0.0, 0.42), (0.2, 0.175, 0.025), (0.6, 0.45, 0.3, 1.0)),
+    "back": ((0.6, 0.0, 0.62), (0.2, 0.035, 0.18), (0.5, 0.4, 0.35, 1.0)),
+    "front_left_leg": ((0.45, -0.15, 0.2), (0.04, 0.04, 0.2), (0.4, 0.3, 0.2, 1.0)),
+    "front_right_leg": ((0.45, 0.15, 0.2), (0.04, 0.04, 0.2), (0.4, 0.3, 0.2, 1.0)),
+    "back_left_leg": ((0.75, -0.15, 0.2), (0.04, 0.04, 0.2), (0.45, 0.32, 0.22, 1.0)),
+    "back_right_leg": ((0.75, 0.15, 0.2), (0.04, 0.04, 0.2), (0.45, 0.32, 0.22, 1.0)),
+    "armrest_left": ((0.6, -0.2, 0.55), (0.2, 0.035, 0.08), (0.55, 0.42, 0.38, 1.0)),
+    "armrest_right": ((0.6, 0.2, 0.55), (0.2, 0.035, 0.08), (0.55, 0.42, 0.38, 1.0)),
+}
+
+PARENT_MAP = {
+    "seat": None,
+    "back": "seat",
+    "front_left_leg": "seat",
+    "front_right_leg": "seat",
+    "back_left_leg": "seat",
+    "back_right_leg": "seat",
+    "armrest_left": "seat",
+    "armrest_right": "seat",
+}
+
+# Mass per part (kg). Seat is static (0) so the chair base never moves when we remove parts.
+PART_MASS = 0.5
+SEAT_MASS = 0.0  # static base
+# Parts bin: where to spawn replacement parts
+PARTS_BIN_POS = (0.9, 0.4, 0.35)
+
+
+def _create_box(cid, half_extents, pos, orn, mass, color_rgba, friction=(1.0, 0.1, 0.1)):
+    """Create a box rigid body. Returns body_id."""
+    col = p.createCollisionShape(p.GEOM_BOX, halfExtents=half_extents, physicsClientId=cid)
+    vis = p.createVisualShape(p.GEOM_BOX, halfExtents=half_extents, rgbaColor=color_rgba, physicsClientId=cid)
+    body = p.createMultiBody(
+        mass,
+        col,
+        vis,
+        pos,
+        orn,
+        physicsClientId=cid,
+    )
+    p.changeDynamics(body, -1, lateralFriction=friction[0], spinningFriction=friction[1], rollingFriction=friction[2], physicsClientId=cid)
+    return body
+
+
+class ChairScene:
     """
-    half = [s / 2 for s in size]
-    col = p.createCollisionShape(p.GEOM_BOX, halfExtents=half)
-    vis = p.createVisualShape(p.GEOM_BOX, halfExtents=half, rgbaColor=color)
-
-    return p.createMultiBody(mass, col, vis, pos)
-
-
-def make_part_dynamic(body_id, mass=1.0):
-    """Make a static part dynamic by changing its mass.
-    
-    This allows a previously static part to be picked up and moved.
-    PyBullet doesn't allow changing mass directly, so we recreate the body.
-    
-    Args:
-        body_id: The PyBullet body ID to make dynamic
-        mass: The mass to give the body (default 1.0 kg)
-        
-    Returns:
-        int: New body ID (the old body is removed)
+    Chair built from boxes; each part is a dynamic body connected by fixed constraints.
+    Tracks original poses and supports detach / attach / spawn_replacement.
     """
-    # Get the current state of the body
-    pos, orn = p.getBasePositionAndOrientation(body_id)
-    
-    # Get visual shape info
-    visual_data = p.getVisualShapeData(body_id)
-    if not visual_data:
-        print(f"[WARNING] Could not get visual data for body {body_id}")
+
+    def __init__(self, chair_center=(0.6, 0.0, 0.0), damaged_part=None):
+        self.cid = get_client()
+        if self.cid is None:
+            raise RuntimeError("PyBullet not connected.")
+        self.chair_center = chair_center
+        self.damaged_part = damaged_part
+        self.bodies = {}
+        self.constraints = {}
+        self.original_poses = {}
+        self._build_chair()
+
+    def _build_chair(self):
+        for part_name, (center, half_ext, color) in CHAIR_PARTS.items():
+            orn = [0, 0, 0, 1]
+            mass = SEAT_MASS if part_name == "seat" else PART_MASS
+            body_id = _create_box(
+                self.cid,
+                half_ext,
+                center,
+                orn,
+                mass=mass,
+                color_rgba=color,
+            )
+            self.bodies[part_name] = body_id
+            self.original_poses[part_name] = (list(center), list(orn))
+            self.constraints[part_name] = []
+
+        for part_name, parent_name in PARENT_MAP.items():
+            if parent_name is None:
+                continue
+            parent_id = self.bodies[parent_name]
+            child_id = self.bodies[part_name]
+            pos_c, orn_c = self.original_poses[part_name]
+            pos_p, orn_p = self.original_poses[parent_name]
+            inv_p, inv_orn_p = p.invertTransform(pos_p, orn_p)
+            parent_frame_pos, parent_frame_orn = p.multiplyTransforms(inv_p, inv_orn_p, pos_c, orn_c)
+            cid = p.createConstraint(
+                parent_id,
+                -1,
+                child_id,
+                -1,
+                p.JOINT_FIXED,
+                jointAxis=[0, 0, 0],
+                parentFramePosition=parent_frame_pos,
+                childFramePosition=[0, 0, 0],
+                parentFrameOrientation=parent_frame_orn,
+                childFrameOrientation=[0, 0, 0, 1],
+                physicsClientId=self.cid,
+            )
+            self.constraints[part_name].append(cid)
+
+        if self.damaged_part and self.damaged_part in self.bodies:
+            self.recolor(self.damaged_part, (1.0, 0.2, 0.2, 1.0))
+
+    def get_part_pose(self, part):
+        """Return (position, orientation) of the current body for part."""
+        if part not in self.bodies:
+            return None, None
+        bid = self.bodies[part]
+        pos, orn = p.getBasePositionAndOrientation(bid, physicsClientId=self.cid)
+        return list(pos), list(orn)
+
+    def recolor(self, part, rgba):
+        """Change visual color of the part."""
+        if part not in self.bodies:
+            logger.warning("recolor: part %s not found", part)
+            return
+        bid = self.bodies[part]
+        p.changeVisualShape(bid, -1, rgbaColor=rgba, physicsClientId=self.cid)
+
+    def detach(self, part):
+        """Break constraint(s) so the part can move freely."""
+        if part not in self.constraints:
+            logger.warning("detach: part %s not found", part)
+            return
+        for cid in self.constraints[part]:
+            p.removeConstraint(cid, physicsClientId=self.cid)
+        self.constraints[part] = []
+
+    def attach(self, part, pose, body_id=None):
+        """
+        Attach a body to the parent at the given world pose.
+        If body_id is None, attach the current body for part (used when re-attaching same body).
+        Otherwise attach the given body_id (replacement part) and register it as the part's body.
+        """
+        parent_name = PARENT_MAP.get(part)
+        if parent_name is None:
+            if part != "seat":
+                logger.warning("attach: part %s has no parent", part)
+            return
+        parent_id = self.bodies[parent_name]
+        if body_id is not None:
+            self.bodies[part] = body_id
+        child_id = self.bodies[part]
+        pos_c, orn_c = pose[0], pose[1]
+        pos_p, orn_p = p.getBasePositionAndOrientation(parent_id, physicsClientId=self.cid)
+        p.resetBasePositionAndOrientation(child_id, pos_c, orn_c, physicsClientId=self.cid)
+        inv_p, inv_orn_p = p.invertTransform(pos_p, orn_p)
+        parent_frame_pos, parent_frame_orn = p.multiplyTransforms(inv_p, inv_orn_p, pos_c, orn_c)
+        cid = p.createConstraint(
+            parent_id,
+            -1,
+            child_id,
+            -1,
+            p.JOINT_FIXED,
+            jointAxis=[0, 0, 0],
+            parentFramePosition=parent_frame_pos,
+            childFramePosition=[0, 0, 0],
+            parentFrameOrientation=parent_frame_orn,
+            childFrameOrientation=[0, 0, 0, 1],
+            physicsClientId=self.cid,
+        )
+        self.constraints[part] = [cid]
+        self.original_poses[part] = (list(pos_c), list(orn_c))
+
+    def spawn_replacement(self, part):
+        """
+        Spawn a new replacement part near the parts bin. Returns body_id.
+        Does not register as part's body until attach() is called.
+        """
+        if part not in CHAIR_PARTS:
+            logger.warning("spawn_replacement: part %s not in chair", part)
+            return None
+        _, half_ext, color = CHAIR_PARTS[part]
+        orn = [0, 0, 0, 1]
+        body_id = _create_box(
+            self.cid,
+            half_ext,
+            PARTS_BIN_POS,
+            orn,
+            mass=PART_MASS,
+            color_rgba=color,
+        )
         return body_id
-    
-    # Extract dimensions and color from visual data
-    # visual_data format: (bodyId, linkIndex, visualGeometryType, dimensions, meshFileName, localVisualPos, localVisualOrn, rgbaColor)
-    vis_info = visual_data[0]
-    geom_type = vis_info[2]
-    dimensions = vis_info[3]  # For box: halfExtents
-    color = vis_info[7]
-    
-    # Get collision shape info
-    # We'll recreate the collision shape based on visual dimensions
-    if geom_type == p.GEOM_BOX:
-        half_extents = dimensions  # Already half extents for boxes
-        col = p.createCollisionShape(p.GEOM_BOX, halfExtents=half_extents)
-        vis = p.createVisualShape(p.GEOM_BOX, halfExtents=half_extents, rgbaColor=color)
-    else:
-        print(f"[WARNING] Unsupported geometry type {geom_type} for body {body_id}")
-        return body_id
-    
-    # Remove old body
-    p.removeBody(body_id)
-    
-    # Create new dynamic body at same position
-    new_body_id = p.createMultiBody(mass, col, vis, pos, orn)
-    
-    # Set realistic dynamics with damping for stable grasping
-    p.changeDynamics(new_body_id, -1, 
-                    lateralFriction=1.0,
-                    spinningFriction=0.2,
-                    rollingFriction=0.1,
-                    linearDamping=0.05,
-                    angularDamping=0.05)
-    
-    print(f"[SCENE] Made body dynamic: old_id={body_id} -> new_id={new_body_id}, mass={mass}")
-    
-    return new_body_id
 
-
-def create_dynamic_block(size, pos, color, mass=1.0):
-    """Create a dynamic (movable) box that can be picked up.
-    
-    Args:
-        size: [x, y, z] full extents of the box.
-        pos: base position to place the box.
-        color: RGBA tuple for the visual shape.
-        mass: Mass in kg (default 1.0).
-        
-    Returns:
-        int: Body ID of the created block
-    """
-    half = [s / 2 for s in size]
-    col = p.createCollisionShape(p.GEOM_BOX, halfExtents=half)
-    vis = p.createVisualShape(p.GEOM_BOX, halfExtents=half, rgbaColor=color)
-    
-    body_id = p.createMultiBody(mass, col, vis, pos)
-    
-    # Set realistic dynamics with damping for stable grasping
-    p.changeDynamics(body_id, -1,
-                    lateralFriction=1.0,
-                    spinningFriction=0.2,
-                    rollingFriction=0.1,
-                    linearDamping=0.05,
-                    angularDamping=0.05)
-    
-    return body_id
-
-
-def spawn_simple_chair(damaged_part_name):
-    """Procedurally generate a chair using simple boxes.
-    
-    This replaces the URDF loading mechanism to ensure the chair 
-    always looks correct regardless of file paths or mesh issues.
-    
-    Args:
-        damaged_part_name: The name of the part to highlight in RED.
-        
-    Returns:
-        dict: Mapping of part_name -> (body_id, -1)
-    """
-    parts = {}
-    
-    # ---------------------------------------------------------
-    # 1. Configuration (Dimensions & Colors)
-    # ---------------------------------------------------------
-   
-    # Chair base position - placed far enough from robot to allow arm clearance
-    # KUKA arm reach is ~0.8m, so placing chair at X=0.6 gives clearance
-    bx, by, bz = 0.65, 0.0, 0.0  # Chair base position (increased from 0.5 for better reach)
-    
-    # =========================================================================
-    # REAL-WORLD SCALE CHAIR DIMENSIONS (meters)
-    # =========================================================================
-    # A realistic chair that matches the KUKA robot's real-world scale.
-    # KUKA iiwa is ~1.3m tall, so the chair should be ~0.9m tall.
-    # 
-    # This fixes the "robot looks gigantic" problem - the issue was the
-    # chair was toy-scale (20cm) while the robot was real-scale (1.3m).
-    # =========================================================================
-    
-    # Seat dimensions (realistic office chair)
-    seat_w = 0.45    # 45 cm width
-    seat_d = 0.45    # 45 cm depth
-    seat_h = 0.04    # 4 cm thick
-    
-    # Leg dimensions
-    leg_w = 0.04     # 4 cm square legs
-    leg_h = 0.45     # 45 cm tall (seat at 45cm height)
-    
-    # Backrest dimensions (grippable by industrial gripper)
-    back_h = 0.50          # 50 cm tall backrest
-    back_thickness = 0.04  # 4 cm thick - fits between gripper fingers
-    back_width = 0.40      # 40 cm wide
-    
-    # Colors
-    c_wood = [0.6, 0.4, 0.2, 1]   # Brown
-    c_dark = [0.5, 0.35, 0.15, 1] # Darker Brown
-    c_dmg  = [1, 0, 0, 1]         # Red (Damage)
-
-    def get_color(name):
-        return c_dmg if name == damaged_part_name else c_wood
-
-    # ---------------------------------------------------------
-    # 2. Build Parts (Calculated relative to Base)
-    # ---------------------------------------------------------
-    
-    # -- SEAT --
-    # Placed on top of the legs
-    seat_z = bz + leg_h + (seat_h / 2)
-    parts["seat"] = block(
-        [seat_d, seat_w, seat_h], 
-        [bx, by, seat_z], 
-        get_color("seat")
-    )
-
-    # -- LEGS --
-    # Centers of the legs
-    dx = (seat_d / 2) - (leg_w / 2)
-    dy = (seat_w / 2) - (leg_w / 2)
-    leg_z = bz + (leg_h / 2)
-
-    # Front is +X, Back is -X
-    parts["front_left_leg"] = block(
-        [leg_w, leg_w, leg_h], 
-        [bx + dx, by - dy, leg_z], 
-        get_color("front_left_leg")
-    )
-    parts["front_right_leg"] = block(
-        [leg_w, leg_w, leg_h], 
-        [bx + dx, by + dy, leg_z], 
-        get_color("front_right_leg")
-    )
-    parts["back_left_leg"] = block(
-        [leg_w, leg_w, leg_h], 
-        [bx - dx, by - dy, leg_z], 
-        get_color("back_left_leg")
-    )
-    parts["back_right_leg"] = block(
-        [leg_w, leg_w, leg_h], 
-        [bx - dx, by + dy, leg_z], 
-        get_color("back_right_leg")
-    )
-
-    # -- BACKREST -- (sized to fit between gripper fingers)
-   
-    back_z = bz + leg_h + seat_h + (back_h / 2)
-    back_x = bx - (seat_d / 2) + (back_thickness / 2)
-    parts["back"] = block(
-        [back_thickness, back_width, back_h],  # Thin and narrow for gripping
-        [back_x, by, back_z], 
-        get_color("back")
-    )
-
-    # -- ARMRESTS -- (real-world scale, grippable)
-   
-    arm_h_offset = 0.20  # Armrests 20cm above seat
-    arm_len = seat_d * 0.8  # 36cm long
-    arm_z = bz + leg_h + seat_h + arm_h_offset
-    arm_thick = 0.04  # 4cm thick - fits between gripper fingers
-    
-   
-    parts["armrest_left"] = block(
-        [arm_len, arm_thick, arm_thick],
-        [bx, by - (seat_w/2) + (arm_thick/2), arm_z],
-        get_color("armrest_left")
-    )
-    parts["armrest_right"] = block(
-        [arm_len, arm_thick, arm_thick],
-        [bx, by + (seat_w/2) - (arm_thick/2), arm_z],
-        get_color("armrest_right")
-    )
-
-    # ---------------------------------------------------------
-    # 3. Return Format
-    # ---------------------------------------------------------
-    # Returns a dictionary: { "part_name": (body_id, link_index) }
-    # Since we built separate bodies, link_index is always -1 (Base Link).
-    return {name: (bid, -1) for name, bid in parts.items()}
+    def part_body_id(self, part):
+        """Return current body id for part, or None."""
+        return self.bodies.get(part)

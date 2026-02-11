@@ -1,317 +1,242 @@
-"""Simple CLI to run a repair plan inside the PyBullet scene.
-
-This module wires together the connection, scene, robot, and plan executor
-helpers so you can run a JSON-formatted repair plan and watch the simulated
-robot perform each step.
-
-Typical usage from the project root:
-    python -m pybullet_sim.run_simulation --plan outputs/repair_plan_seat_loose.json
+"""
+run_simulation.py — Load repair plan JSON and run full simulation with Panda and chair.
+Usage:
+  python pybullet_sim/run_simulation.py --plan outputs/repair_plan_back_left_leg_broken.json --gui
+  python pybullet_sim/run_simulation.py --plan ... --stream-port 8080 --camera-params path/to/camera_params.json
 """
 
 import argparse
-import os
+import io
 import json
+import logging
+import math
+import os
+import sys
 import threading
 import time
-from sim_connection import connect, reset_camera, keep_window_open, save_screenshot
-from sim_robot import load_robot, move_to_home
-from sim_scene import spawn_simple_chair
-from sim_plan_executor import load_json, execute_step
+
+# Run from repo root so imports work
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 try:
-    from stream_server import start_streaming_server, capture_frame
+    from pybullet_sim.sim_connection import connect, reset_camera, step_sim, get_client
+    from pybullet_sim.sim_robot import load_robot, open_gripper
+    from pybullet_sim.sim_scene import ChairScene
+    from pybullet_sim.sim_plan_executor import execute_step
 except ImportError:
-    start_streaming_server = None
-    capture_frame = None
-    print("[WARN] stream_server not available, using legacy screenshot mode", flush=True)
+    from sim_connection import connect, reset_camera, step_sim, get_client
+    from sim_robot import load_robot, open_gripper
+    from sim_scene import ChairScene
+    from sim_plan_executor import execute_step
+
+import pybullet as p
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+SIM_HZ = 240.0
+PANDA_BASE = (0.0, 0.0, 0.0)
+STREAM_WIDTH = 640
+STREAM_HEIGHT = 480
+STREAM_INTERVAL = 0.15  # ~6–7 FPS
+
+# Shared buffer for streamed frame (JPEG bytes)
+_latest_frame_jpeg = None
+_frame_lock = threading.Lock()
+
+
+def load_plan(path):
+    """Load repair_sequence from JSON file."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    seq = data.get("repair_sequence") or data.get("repair_plan") or []
+    return seq
+
+
+def _read_camera_params(path):
+    """Read dist, yaw, pitch from JSON file. Returns None if file missing/invalid."""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return {
+            "dist": float(d.get("dist", 2.4)),
+            "yaw": float(d.get("yaw", 55.0)),
+            "pitch": float(d.get("pitch", -25.0)),
+        }
+    except Exception:
+        return None
+
+
+def _capture_frame(cid, dist, yaw, pitch, target=(0.35, 0.0, 0.35)):
+    """Render current view to RGB and return as JPEG bytes (for headless streaming)."""
+    try:
+        yaw_rad = math.radians(yaw)
+        pitch_rad = math.radians(pitch)
+        dx = dist * math.cos(pitch_rad) * math.sin(yaw_rad)
+        dy = dist * math.cos(pitch_rad) * math.cos(yaw_rad)
+        dz = dist * math.sin(pitch_rad)
+        eye = (target[0] + dx, target[1] + dy, target[2] + dz)
+        up = (0, 0, 1)
+        view = p.computeViewMatrix(eye, target, up, physicsClientId=cid)
+        fov = 60
+        aspect = STREAM_WIDTH / float(STREAM_HEIGHT)
+        near, far = 0.01, 10.0
+        proj = p.computeProjectionMatrixFOV(fov, aspect, near, far, physicsClientId=cid)
+        _, _, rgb_flat, _, _ = p.getCameraImage(
+            STREAM_WIDTH, STREAM_HEIGHT, viewMatrix=view, projectionMatrix=proj, physicsClientId=cid
+        )
+        if rgb_flat is None:
+            return None
+        try:
+            import numpy as np
+            from PIL import Image
+            rgba = np.array(rgb_flat, dtype=np.uint8).reshape((STREAM_HEIGHT, STREAM_WIDTH, 4))
+            rgb = rgba[:, :, :3]
+            img = Image.fromarray(rgb)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            return buf.getvalue()
+        except Exception as e:
+            logger.debug("Frame encode failed: %s", e)
+            return None
+    except Exception as e:
+        logger.debug("Capture frame failed: %s", e)
+        return None
+
+
+def _run_stream_server(port):
+    """Run a simple HTTP server that serves GET /frame.jpg with the latest JPEG."""
+    try:
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+    except ImportError:
+        from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
+    global _latest_frame_jpeg
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.split("?")[0].rstrip("/") == "/frame.jpg":
+                with _frame_lock:
+                    data = _latest_frame_jpeg
+                if data:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self.send_response(204)
+                    self.end_headers()
+            else:
+                self.send_response(404)
+                self.end_headers()
+        def log_message(self, format, *args):
+            pass
+    server = HTTPServer(("127.0.0.1", port), Handler)
+    logger.info("Stream server listening on http://127.0.0.1:%s/frame.jpg", port)
+    server.serve_forever()
+
+    server.server_close()
 
 
 def main():
-    """Parse CLI args, set up the simulation, and execute the plan.
-
-    Arguments supported mirror the simple demo needs: which plan to run,
-    an optional repair graph (not required by executor), robot type, and
-    which chair part should be marked as damaged for visualization.
-    """
-
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--plan", required=True, help="Path to repair plan JSON")
-    ap.add_argument("--graph", default=None, help="(Optional) repair graph JSON")
-    ap.add_argument(
-        "--robot",
-        default="kuka",
-        help="Robot type identifier for sim_robot.load_robot"
-    )
-    ap.add_argument(
-        "--damaged-part",
-        default="back_left_leg",
-        help="Name of the damaged chair part to highlight in the scene"
-    )
-    ap.add_argument("--camera-dist", type=float, default=1.8, help="Camera distance")
-    ap.add_argument("--camera-yaw", type=float, default=40, help="Camera yaw")
-    ap.add_argument("--camera-pitch", type=float, default=-35, help="Camera pitch")
-    ap.add_argument("--camera-params", help="Path to JSON file with dynamic camera parameters")
-    ap.add_argument("--screenshot", help="Path to save screenshot (legacy, use --stream-port instead)")
-    ap.add_argument("--stream-port", type=int, default=8080, help="Port for direct frame streaming (default: 8080)")
-    ap.add_argument("--gui", action="store_true", help="Enable PyBullet GUI window (default: headless)")
+    global _latest_frame_jpeg
+    ap = argparse.ArgumentParser(description="Run PyBullet chair repair simulation")
+    ap.add_argument("--plan", type=str, required=True, help="Path to repair plan JSON")
+    ap.add_argument("--gui", action="store_true", help="Show PyBullet GUI")
+    ap.add_argument("--damaged-part", type=str, default=None, help="Part to highlight (default: from first step)")
+    ap.add_argument("--camera-dist", type=float, default=2.4, help="Camera distance")
+    ap.add_argument("--camera-yaw", type=float, default=55.0)
+    ap.add_argument("--camera-pitch", type=float, default=-25.0)
+    ap.add_argument("--stream-port", type=int, default=None, help="Serve GET /frame.jpg on this port (headless)")
+    ap.add_argument("--camera-params", type=str, default=None, help="JSON file to read camera dist/yaw/pitch from")
+    ap.add_argument("--screenshot", type=str, default=None, help="Path to save periodic screenshot (optional)")
     args = ap.parse_args()
 
-    # Flush output immediately for better logging
-    import sys
-    sys.stdout.flush()
-    sys.stderr.flush()
-
-    print(f"[INFO] Starting simulation with plan: {args.plan}", flush=True)
-    print(f"[INFO] Screenshot path: {args.screenshot}", flush=True)
-    print(f"[INFO] Camera params: {args.camera_params}", flush=True)
-
-    # Verify plan file exists
-    if not os.path.exists(args.plan):
-        print(f"[ERROR] Plan file not found: {args.plan}", flush=True)
+    plan_path = os.path.abspath(args.plan)
+    if not os.path.isfile(plan_path):
+        logger.error("Plan file not found: %s", plan_path)
         sys.exit(1)
 
-    try:
-        # Start a PyBullet instance (GUI or headless)
-        print("[INFO] Connecting to PyBullet...", flush=True)
-        connect(gui=args.gui)
-        print("[INFO] PyBullet connected successfully", flush=True)
-        reset_camera(dist=args.camera_dist, yaw=args.camera_yaw, pitch=args.camera_pitch)
-        print("[INFO] Camera reset", flush=True)
-    except Exception as e:
-        print(f"[ERROR] Failed to connect to PyBullet: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+    steps = load_plan(plan_path)
+    if not steps:
+        logger.error("No repair_sequence in plan")
         sys.exit(1)
 
-    damaged = args.damaged_part
+    damaged_part = args.damaged_part
+    if not damaged_part and steps:
+        damaged_part = (steps[0].get("target_part") or "back_left_leg").strip()
+    logger.info("Damaged part (highlight): %s", damaged_part)
 
-    # Load the robot model and spawn a simple chair with the specified
-    # part marked as damaged (red color).
+    use_gui = args.gui and not args.stream_port
+    connect(gui=use_gui)
+    cid = get_client()
+    reset_camera(
+        dist=args.camera_dist,
+        yaw=args.camera_yaw,
+        pitch=args.camera_pitch,
+        target=(0.35, 0.0, 0.35),
+    )
 
-    try:
-        print(f"[INFO] Loading robot: {args.robot}", flush=True)
-        robot, ee_link, gripper, open_val, close_val = load_robot(args.robot)
-        print("[INFO] Robot loaded successfully", flush=True)
-        print(f"[INFO] Spawning chair with damaged part: {damaged}", flush=True)
-        parts = spawn_simple_chair(damaged)
-        print(f"[INFO] Chair spawned with {len(parts)} parts", flush=True)
-        
-        # DEBUG: Print body IDs for collision debugging
-        print("[DEBUG] Chair body IDs:", flush=True)
-        for name, (bid, _) in parts.items():
-            print(f"  - {name}: body_id={bid}", flush=True)
-            
-    except Exception as e:
-        print(f"[ERROR] Failed to load robot or spawn chair: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-    
-    # Capture original positions for replacement logic
-    from sim_plan_executor import get_pos
-    original_positions = {}
-    for part_name, part_handle in parts.items():
+    robot_id, ee_link, gripper_joints = load_robot("panda", base_position=PANDA_BASE)
+    open_gripper(robot_id, gripper_joints, 0.04)
+    step_sim(0.5, SIM_HZ, blocking=True)
+
+    scene = ChairScene(chair_center=(0.6, 0.0, 0.0), damaged_part=damaged_part)
+    step_sim(0.5, SIM_HZ, blocking=True)
+
+    for step in steps:
+        step_id = step.get("step_id", "?")
+        action = step.get("action_type", "")
+        target = step.get("target_part", "")
+        logger.info("Executing step %s: %s %s", step_id, action, target)
         try:
-            pos, _ = get_pos(part_handle)
-            original_positions[part_name] = pos
+            execute_step(robot_id, ee_link, gripper_joints, scene, step)
         except Exception as e:
-            print(f"[WARN] Could not get position for {part_name}: {e}")
+            logger.exception("Step %s failed: %s", step_id, e)
+    logger.info("Plan finished. Simulation continues.")
+    step_sim(2.0, SIM_HZ, blocking=True)
 
-    # Start direct frame streaming server (better than screenshots!)
-    stream_server = None
-    if args.stream_port and start_streaming_server:
+    if args.stream_port:
+        # Start HTTP server thread for /frame.jpg
+        server_thread = threading.Thread(target=_run_stream_server, args=(args.stream_port,), daemon=True)
+        server_thread.start()
+        time.sleep(0.3)
+        cam_dist, cam_yaw, cam_pitch = args.camera_dist, args.camera_yaw, args.camera_pitch
+        target = (0.35, 0.0, 0.35)
         try:
-            camera_params_path = args.camera_params if args.camera_params else None
-            stream_server = start_streaming_server(args.stream_port, camera_params_path)
-            print(f"[INFO] Direct frame streaming enabled on port {args.stream_port}", flush=True)
-            print(f"[INFO] Access stream at: http://localhost:{args.stream_port}/frame.jpg", flush=True)
-            
-            # Set up frame callback so frames are captured during repair execution
-            # This allows the UI to see robot movement during repairs
-            if capture_frame:
-                from sim_connection import set_frame_callback
-                
-                def update_stream_frame():
-                    """Callback to update stream frame during simulation steps."""
-                    stream_server.update_camera_params()
-                    frame_bytes = capture_frame(stream_server.camera_params)
-                    if frame_bytes:
-                        stream_server.frame_buffer.set_frame(frame_bytes)
-                
-                set_frame_callback(update_stream_frame)
-                print("[INFO] Frame callback set for live streaming during repairs", flush=True)
-            
-        except Exception as e:
-            print(f"[WARN] Failed to start streaming server: {e}", flush=True)
-            print(f"[INFO] Falling back to legacy screenshot mode", flush=True)
-            stream_server = None
-    
-    # Legacy screenshot support (for backward compatibility)
-    screenshot_path = None
-    if args.screenshot:
-        screenshot_path = os.path.abspath(args.screenshot)
-        screenshot_dir = os.path.dirname(screenshot_path)
-        os.makedirs(screenshot_dir, exist_ok=True)
-        print(f"[INFO] Legacy screenshot mode enabled: {screenshot_path}", flush=True)
-
-    # Load and execute the repair plan step-by-step.
-    try:
-        print(f"[INFO] Loading repair plan from: {args.plan}", flush=True)
-        plan = load_json(args.plan)
-        seq = plan.get("repair_sequence", [])
-        print(f"[INFO] Running {len(seq)} steps from plan: {args.plan}", flush=True)
-        if not seq:
-            print("[WARN] No repair steps found in plan!", flush=True)
-    except Exception as e:
-        print(f"[ERROR] Failed to load plan: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-    for step in seq:
-        target_part = step.get("target_part", "")
-       
-        if target_part not in parts:
-            print(f"[SKIP] Part '{target_part}' not in simulation, skipping step {step.get('step_id')}")
-            continue
-        execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, original_positions=original_positions)
-        
-        # Legacy screenshot support (if enabled)
-        if screenshot_path:
-            try:
-                cam_dist = args.camera_dist
-                cam_yaw = args.camera_yaw
-                cam_pitch = args.camera_pitch
-                
-                if args.camera_params and os.path.exists(args.camera_params):
+            while True:
+                params = _read_camera_params(args.camera_params)
+                if params:
+                    cam_dist, cam_yaw, cam_pitch = params["dist"], params["yaw"], params["pitch"]
+                reset_camera(dist=cam_dist, yaw=cam_yaw, pitch=cam_pitch, target=target)
+                step_sim(1.0 / 30.0, SIM_HZ, blocking=True)
+                jpeg = _capture_frame(cid, cam_dist, cam_yaw, cam_pitch, target)
+                if jpeg:
+                    with _frame_lock:
+                        _latest_frame_jpeg = jpeg
+                if args.screenshot and jpeg and os.path.isdir(os.path.dirname(args.screenshot)):
                     try:
-                        with open(args.camera_params, 'r') as f:
-                            cam_params = json.load(f)
-                            cam_dist = cam_params.get('dist', cam_dist)
-                            cam_yaw = cam_params.get('yaw', cam_yaw)
-                            cam_pitch = cam_params.get('pitch', cam_pitch)
+                        with open(args.screenshot, "wb") as f:
+                            f.write(jpeg)
                     except Exception:
                         pass
-                
-                save_screenshot(
-                    screenshot_path, 
-                    width=640, 
-                    height=480,
-                    dist=cam_dist,
-                    yaw=cam_yaw,
-                    pitch=cam_pitch,
-                    target=[0.6, 0.0, 0.4]
-                )
-            except Exception as e:
-                print(f"[WARN] Failed to save step screenshot: {e}")
-
-    # =========================================================================
-    # RESET ROBOT TO HOME POSITION AFTER REPAIR SEQUENCE
-    # =========================================================================
-    # After completing all repair steps, return robot to a neutral home pose.
-    # This provides a clean visual ending and prepares the robot for the next task.
-    print("[INFO] All repair steps complete. Returning robot to home position...")
-    try:
-        move_to_home(robot, args.robot)
-        print("[INFO] Robot successfully returned to home position")
-    except Exception as e:
-        print(f"[WARN] Could not move robot to home position: {e}")
-    
-    # Keep simulation running continuously for live streaming
-    print("[INFO] Repair plan execution complete. Keeping simulation running for live streaming...")
-    
-    if stream_server:
-        print("[INFO] Direct frame streaming active. Use camera controls to view from different angles.")
-        print(f"[INFO] Stream available at: http://localhost:{args.stream_port}/frame.jpg")
-        try:
-            # Keep the simulation alive - streaming server handles frames
-            # Use non-blocking loop with proper exception handling
-            import pybullet as p
-            import signal
-            import sys
-            
-            # Flag for graceful shutdown
-            running = True
-            
-            def signal_handler(sig, frame):
-                nonlocal running
-                print("\n[INFO] Received shutdown signal, cleaning up...")
-                running = False
-            
-            # Register signal handlers for graceful shutdown
-            signal.signal(signal.SIGINT, signal_handler)
-            signal.signal(signal.SIGTERM, signal_handler)
-            
-            frame_count = 0
-            while running and p.isConnected():
-                try:
-                    p.stepSimulation()
-                    frame_count += 1
-                    
-                    # Capture frame from main thread (PyBullet is NOT thread-safe!)
-                    # Update camera params from file and capture at ~30 FPS
-                    if frame_count % 2 == 0 and capture_frame:
-                        stream_server.update_camera_params()
-                        frame_bytes = capture_frame(stream_server.camera_params)
-                        if frame_bytes:
-                            stream_server.frame_buffer.set_frame(frame_bytes)
-                    
-                    # 60 Hz simulation rate
-                    time.sleep(1.0 / 60)
-                    
-                    # Periodic status update (every 10 seconds)
-                    if frame_count % 600 == 0:
-                        print(f"[INFO] Simulation running... (frame {frame_count})", flush=True)
-                    
-                except Exception as e:
-                    print(f"[WARN] Simulation step error: {e}")
-                    time.sleep(0.1)  # Brief pause on error
-                    
+                time.sleep(STREAM_INTERVAL)
         except KeyboardInterrupt:
-            print("[INFO] Simulation stopped by user.")
-        finally:
-            # Cleanup
-            print("[INFO] Cleaning up simulation...")
-            try:
-                if stream_server:
-                    stream_server.shutdown()
-            except:
-                pass
-            try:
-                import pybullet as p
-                if p.isConnected():
-                    p.disconnect()
-            except:
-                pass
-            print("[INFO] Simulation cleanup complete.")
-    elif screenshot_path:
-        # Legacy screenshot mode (file-based, not streaming)
-        print("[INFO] Legacy screenshot mode active.")
+            pass
+    elif use_gui:
         try:
-            import pybullet as p
-            while p.isConnected():
-                p.stepSimulation()
-                time.sleep(1.0 / 60)
+            while True:
+                step_sim(1.0 / 60.0, SIM_HZ, blocking=True)
         except KeyboardInterrupt:
-            print("[INFO] Simulation stopped by user.")
-        finally:
-            try:
-                import pybullet as p
-                if p.isConnected():
-                    p.disconnect()
-            except:
-                pass
-    else:
-        # No streaming, no screenshots - just keep window open if GUI
-        if args.gui:
-            keep_window_open()
-        else:
-            print("[INFO] Headless mode without streaming. Simulation complete.")
-            try:
-                import pybullet as p
-                if p.isConnected():
-                    p.disconnect()
-            except:
-                pass
+            pass
 
 
 if __name__ == "__main__":

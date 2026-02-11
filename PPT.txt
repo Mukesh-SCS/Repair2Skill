@@ -1,0 +1,90 @@
+Exploring the project structure and reading key files to understand the codebase.
+
+
+[2 tools called]
+
+
+Reading main entry points, config, requirements, and checking for PyBullet-related code (README references `pybullet_sim/`, git shows those files deleted).
+
+
+[4 tools called]
+
+
+Noting `pybullet_sim/` is absent (git shows it deleted). Reading scripts, utils, and UI and searching the repo for PyBullet references.
+
+
+[6 tools called]
+
+
+Reading the UI server (which launches the PyBullet simulation), openai_utils, and the remaining scripts.
+
+
+[4 tools called]
+
+
+Checking the training script, synthetic data generator, and any sample repair-plan format:
+
+
+[4 tools called]
+
+
+Here’s a concise overview of the project so you can ask PyBullet-related questions.
+
+---
+
+## Repair2Skill — Project overview
+
+**Goal:** Detect damaged chair parts, generate repair plans with GPT-4o, build dependency graphs, render visual guides, and simulate robotic repair in **PyBullet** (with optional streaming to the web UI).
+
+---
+
+### Pipeline (5 stages)
+
+| Stage | What it does | Outputs |
+|--------|----------------|---------|
+| 1 | Image input (camera or upload) | Image path |
+| 2 | **Detection** — SSDLite MobileNetV3 (8 parts + 5 damage types) | `outputs/stage1_parts.json` |
+| 3 | **Repair plan** — GPT-4o with strict action vocabulary | `outputs/repair_plan_<part>_<damage>.json` |
+| 4 | **Graph + visual guide** — Dependency graph + highlighted guide image | `repair_graph_*.json`, `data/visual_guides/*.png` |
+| 5 | **PyBullet simulation** — Run repair steps with a robot (KUKA/Panda) | Real-time stream or GUI |
+
+---
+
+### Chair model and repair plan
+
+- **Parts** (from `scripts/chair_graph.py`): `seat`, `back`, `front_left_leg`, `front_right_leg`, `back_left_leg`, `back_right_leg`, `armrest_left`, `armrest_right`.  
+  Seat is the root; legs, back, and armrests are children.
+- **Damage types**: `missing`, `cracked`, `broken`, `loose`, `scratched`.
+- **Repair plan format** (used by the sim and GPT prompt in `utils/openai_utils.py`):
+  - `repair_sequence`: list of steps.
+  - Each step: `step_id`, `action_type`, `target_part`, `description`, `tools`.
+  - **Allowed `action_type`** (aligned with the simulator): `inspect`, `remove`, `replace`, `tighten`, `clean`.
+
+---
+
+### PyBullet simulation (from README and UI)
+
+- **Folder:** The **`pybullet_sim/`** directory is **not present** in the repo (git shows it as deleted). The README and `ui/server.js` still refer to it.
+- **Intended modules:**
+  - **`run_simulation.py`** — Entry point. CLI: `--plan`, `--graph`, `--robot` (kuka/panda), `--damaged-part`, `--camera-dist`, `--camera-yaw`, `--camera-pitch`, `--gui`, `--screenshot`, and in the server also `--stream-port 8080`, `--camera-params <path>`.
+  - **`sim_connection.py`** — PyBullet connection, camera, lighting.
+  - **`sim_robot.py`** — Load robot (KUKA iiwa / Panda), inverse kinematics.
+  - **`sim_scene.py`** — Chair built from colored primitives; damaged part in red.
+  - **`sim_plan_executor.py`** — Execute steps: inspect (yellow), remove (orange, part moved away), replace (green, install), tighten (blue, tool wiggle), clean (generic wiggle).
+  - **Streaming:** A stream server (e.g. port 8080) serves `/frame.jpg`; the Express server proxies it as `/sim-stream.jpg` for the React app. Camera can be controlled via a JSON file (`camera_params.json`: dist, yaw, pitch).
+
+- **How the UI starts the sim:** After upload, the backend runs  
+  `python pybullet_sim/run_simulation.py --plan <path> --damaged-part <part> --stream-port 8080 --camera-params <path> ...`  
+  and the frontend polls `/sim-stream.jpg` for the live view.
+
+---
+
+### Other relevant files
+
+- **`main.py`** — CLI pipeline (data gen, train, camera/upload → detect → plan → graph → visual guide). It does **not** start PyBullet; that’s only via the UI or by running `run_simulation.py` manually.
+- **`requirements.txt`** — Includes `pybullet` (no `pybullet_sim` code in the tree).
+- **`utils/openai_utils.py`** — System prompt for repair plans is written to match `sim_plan_executor.py` (same action types and semantics).
+
+---
+
+You can ask next about PyBullet in this project: e.g. how to restore/implement `pybullet_sim`, how the sim is supposed to use the repair plan and chair graph, streaming/camera, or robot/scene design.

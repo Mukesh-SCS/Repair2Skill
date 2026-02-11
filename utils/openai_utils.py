@@ -95,7 +95,7 @@ def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: st
         "3. **Logic**: \n"
         "   - If 'dependencies' are listed, you MUST 'remove' them BEFORE working on the 'damaged_part'.\n"
         "   - You MUST 'replace' or 'attach' the dependencies back AFTER fixing the damaged part.\n"
-        "   - If damage_type is 'missing' or 'broken', use 'replace' for the damaged part.\n"
+        "   - If damage_type is 'missing' or 'broken', you MUST output BOTH: first a 'remove' step for the damaged part, then a 'replace' step. Never output only 'replace' without a preceding 'remove'.\n"
         "   - If damage_type is 'loose', use 'tighten'.\n"
     )
 
@@ -128,12 +128,40 @@ def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: st
         # Normalize keys just in case
         if "repair_plan" in data and "repair_sequence" not in data:
             data["repair_sequence"] = data["repair_plan"]
-            
+        # Ensure remove-before-replace for broken/missing (sim expects physical remove then replace)
+        data["repair_sequence"] = _ensure_remove_before_replace(data.get("repair_sequence", []))
         return data
 
     except Exception as e:
         logger.error(f"OpenAI API Error: {e}")
-        return _get_fallback_plan(damaged_part, damage_type)
+        plan = _get_fallback_plan(damaged_part, damage_type)
+        plan["repair_sequence"] = _ensure_remove_before_replace(plan.get("repair_sequence", []))
+        return plan
+
+
+def _ensure_remove_before_replace(steps):
+    """If a replace step exists for a part but no remove for that part before it, insert a remove step."""
+    if not steps:
+        return steps
+    out = []
+    seen_remove_for = set()
+    for i, s in enumerate(steps):
+        action = (s.get("action_type") or "").strip().lower()
+        target = (s.get("target_part") or "").strip()
+        if action == "remove" and target:
+            seen_remove_for.add(target)
+        if action == "replace" and target and target not in seen_remove_for:
+            remove_step = {
+                "step_id": s.get("step_id", 1) - 1,
+                "action_type": "remove",
+                "target_part": target,
+                "description": f"Remove the damaged {target}.",
+                "tools": ["screwdriver", "gripper"],
+            }
+            out.append(remove_step)
+            seen_remove_for.add(target)
+        out.append(s)
+    return out
 
 
 def _get_fallback_plan(part, damage):
