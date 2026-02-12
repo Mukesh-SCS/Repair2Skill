@@ -29,7 +29,7 @@ from scripts.detect_damage import detect as detect_damage_and_parts
 from scripts.generate_repair_plan import generate_repair_plan
 from scripts.repair_graph import generate_repair_graph, save_repair_graph_json, visualize_repair_graph
 from scripts.render_visual_guidance import render_step_visual
-from scripts.generate_synthetic_data import SyntheticDataGenerator
+from scripts.generate_synthetic_data import SyntheticChairGenV2
 
 
 def main():
@@ -47,20 +47,19 @@ def main():
 
     # ---- Stage 0: Data Gen / Training ----
     if args.generate_data:
-        print("[INFO] Generating synthetic training data...")
-        print("[INFO] This will create images with damage AND negative samples (no damage)")
-        SyntheticDataGenerator().generate_dataset(N=args.samples)
+        print("[INFO] Generating synthetic training data (synth_v2)...")
+        SyntheticChairGenV2("./data/synth_v2").generate(N=args.samples)
         print("[INFO] Data generation complete!")
-        print("[INFO] Next step: Train the model with: python main.py --train-frcnn --epochs 50")
+        print("[INFO] Next: python main.py --train-frcnn --epochs 50")
         return
 
     if args.train_frcnn:
-        print("[INFO] Starting model training...")
-        print("[INFO] This may take a while depending on your hardware.")
+        print("[INFO] Starting model training (parts detector + damage classifier)...")
         subprocess.run([
             sys.executable, "scripts/train_detector_mobilenet.py",
-            "--epochs", str(args.epochs),
-            "--batch", str(args.batch)
+            "--task", "all",
+            "--epochs_parts", str(args.epochs),
+            "--batch_parts", str(args.batch),
         ], check=True)
         return
 
@@ -74,19 +73,24 @@ def main():
 
     print(f"[INFO] Using image: {image_path}")
 
-    model_path = "./models/damage_detection/mobilenet_ssd.pth"
-    if not os.path.exists(model_path):
-        print("[ERROR] Model not found at:", model_path)
-        print("[ERROR] Please train the model first:")
-        print("  1. Generate data: python main.py --generate-data --samples 2000")
-        print("  2. Train model:   python main.py --train-frcnn --epochs 50")
+    parts_weights = "./models/damage_detection/parts_detector_ssd.pth"
+    damage_weights = "./models/damage_detection/damage_classifier_resnet18.pth"
+    if not os.path.exists(parts_weights) or not os.path.exists(damage_weights):
+        print("[ERROR] Models not found. Need both:", parts_weights, "and", damage_weights)
+        print("  1. Generate data: python scripts/generate_synthetic_data.py --output_dir ./data/synth_v2 --samples 12000")
+        print("  2. Train:         python scripts/train_detector_mobilenet.py --task all")
         return
 
     os.makedirs("outputs", exist_ok=True)
 
     # ---- Stage 2: Detection ----
-    print("[INFO] Running damage detection...")
-    stage1 = detect_damage_and_parts(image_path, weights=model_path, threshold=args.threshold, debug=args.debug)
+    print("[INFO] Running damage detection (parts + damage classifier)...")
+    stage1 = detect_damage_and_parts(
+        image_path,
+        parts_weights=parts_weights,
+        damage_weights=damage_weights,
+        part_thresh=args.threshold,
+    )
     with open("outputs/stage1_parts.json", "w") as f:
         json.dump(stage1, f, indent=2)
 

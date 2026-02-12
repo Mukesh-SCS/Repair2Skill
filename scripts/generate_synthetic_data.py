@@ -1,144 +1,63 @@
-"""
-================================================================================
-SYNTHETIC DATA GENERATOR FOR CHAIR DAMAGE DETECTION
-================================================================================
-Generates training data for SSDLite-MobileNetV3 (8 parts + 5 damage types).
-Use this data to train scripts/train_detector_mobilenet.py on GPU for best
-detection when users upload chair images.
-
-Features:
-    - 8 chair parts: seat, back, front/back left/right legs, armrest left/right
-    - 5 damage types: missing, cracked, broken, loose, scratched
-    - Multiple damages per image (configurable ratio)
-    - Balanced sampling option so every (part, damage_type) is seen enough
-    - Train/validation split for reproducible training
-    - Negative samples (no damage) for better robustness
-    - Background and geometry variation (scale, rotation, translation)
-
-USAGE:
-    # Generate 5000 images with 20% multi-damage and 80/20 train/val split
-    python scripts/generate_synthetic_data.py --samples 5000 --multi_damage_ratio 0.2 --val_ratio 0.2
-
-    # With balanced damage types (slower, more epochs of sampling)
-    python scripts/generate_synthetic_data.py --samples 5000 --balance
-
-OUTPUTS:
-    data/synthetic_damage/images/*.jpg
-    data/synthetic_damage/annotations.json       (all samples)
-    data/synthetic_damage/annotations_train.json (train split)
-    data/synthetic_damage/annotations_val.json   (val split)
-    data/synthetic_damage/stats.json
-================================================================================
-"""
-
+# scripts/generate_synthetic_data.py
+# V2: Part boxes + part_damage. Domain randomization: rotation, perspective, shading,
+#     edge-crossing damage, shadows, occlusion. Bboxes are updated to match transforms.
+import math
 import os
 import json
 import random
 import numpy as np
-from typing import List, Dict, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFilter, ImageColor
 from tqdm import tqdm
-from pathlib import Path
+
+PARTS = [
+    "seat", "back",
+    "front_left_leg", "front_right_leg",
+    "back_left_leg", "back_right_leg",
+    "armrest_left", "armrest_right",
+]
+
+DAMAGE_TYPES = ["none", "missing", "cracked", "broken", "loose", "scratched"]
 
 
-class EnhancedSyntheticDataGenerator:
-    """Advanced synthetic chair damage dataset generator."""
-    
-    def __init__(self, output_dir: str = "./data/synthetic_damage/"):
+class SyntheticChairGenV2:
+    def __init__(self, output_dir="./data/synth_v2"):
         self.output_dir = output_dir
-        os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
-        
-        # Chair parts
-        self.chair_parts = [
-            "seat", "back",
-            "front_left_leg", "front_right_leg",
-            "back_left_leg", "back_right_leg",
-            "armrest_left", "armrest_right"
-        ]
-        
-        # Damage types
-        self.damage_types = ["missing", "cracked", "broken", "loose", "scratched"]
-        
-        # Part colors (with variation)
+        self.img_dir = os.path.join(output_dir, "images")
+        os.makedirs(self.img_dir, exist_ok=True)
         self.part_colors = {
-            "seat": "#D2B48C",  # Tan
-            "back": "#CD853F",  # Peru
-            "front_left_leg": "#8B4513",  # Saddle brown
-            "front_right_leg": "#8B4513",
-            "back_left_leg": "#A0522D",  # Sienna
-            "back_right_leg": "#A0522D",
-            "armrest_left": "#BC8F8F",  # Rosy brown
-            "armrest_right": "#BC8F8F",
+            "seat": "#C8AA7A",
+            "back": "#B07A3A",
+            "front_left_leg": "#6C3A16",
+            "front_right_leg": "#6C3A16",
+            "back_left_leg": "#7A3F18",
+            "back_right_leg": "#7A3F18",
+            "armrest_left": "#A88A8A",
+            "armrest_right": "#A88A8A",
         }
-        
-        # Statistics tracking
-        self.stats = {
-            "total_images": 0,
-            "single_damage": 0,
-            "multi_damage": 0,
-            "damage_distribution": {dt: 0 for dt in self.damage_types},
-            "part_distribution": {pt: 0 for pt in self.chair_parts}
-        }
-    
-    # =====================================================================
-    # BACKGROUND & TEXTURE GENERATION
-    # =====================================================================
-    
-    def _generate_background(self, width: int, height: int) -> Image.Image:
-        """Generate realistic background with texture variation and real images."""
-        # Choose background style
-        style = random.choice(['solid', 'gradient', 'texture', 'real'])
-        
-        if style == 'real':
-            real_bg_dir = os.path.join(self.output_dir, "real_backgrounds")
-            if os.path.exists(real_bg_dir):
-                files = [f for f in os.listdir(real_bg_dir) if f.lower().endswith(('.jpg', '.png'))]
-                if files:
-                    fname = random.choice(files)
-                    try:
-                        bg = Image.open(os.path.join(real_bg_dir, fname)).convert('RGB').resize((width, height))
-                        return bg
-                    except Exception:
-                        pass  # Fall back to generated backgrounds
-        
-        if style == 'solid':
-            # Solid color with slight variation
-            base_color = random.randint(180, 240)
-            color = (base_color, base_color, base_color)
-            bg = Image.new('RGB', (width, height), color)
-        
-        elif style == 'gradient':
-            # Subtle gradient background
-            bg = Image.new('RGB', (width, height))
-            pixels = bg.load()
-            
-            for y in range(height):
-                intensity = int(200 + (y / height) * 40)
-                for x in range(width):
-                    pixels[x, y] = (intensity, intensity, intensity)
-        
-        else:  # texture
-            # Noisy texture background
-            base_color = random.randint(190, 235)
-            bg = Image.new('RGB', (width, height), (base_color, base_color, base_color))
-            
-            # Add noise
-            noise = np.random.normal(0, 10, (height, width, 3)).astype(np.uint8)
-            bg_array = np.array(bg) + noise
-            bg_array = np.clip(bg_array, 0, 255).astype(np.uint8)
-            bg = Image.fromarray(bg_array)
-        
-        return bg
-    
-    # =====================================================================
-    # CHAIR GEOMETRY
-    # =====================================================================
-    
-    def _canonical_parts(self, W: int = 640, H: int = 480) -> Dict[str, List]:
-        """Get canonical part coordinates at base resolution."""
-        base_w, base_h = 640, 480
-        
-        base_parts = {
+
+    def _bg(self, W, H):
+        mode = random.choice(["solid", "gradient", "noise"])
+        if mode == "solid":
+            c = random.randint(170, 240)
+            return Image.new("RGB", (W, H), (c, c, c))
+        if mode == "gradient":
+            img = Image.new("RGB", (W, H))
+            px = img.load()
+            a = random.randint(170, 210)
+            b = random.randint(210, 245)
+            for y in range(H):
+                t = y / max(1, H - 1)
+                v = int(a * (1 - t) + b * t)
+                for x in range(W):
+                    px[x, y] = (v, v, v)
+            return img
+        base = np.full((H, W, 3), random.randint(175, 235), dtype=np.uint8)
+        noise = np.random.normal(0, 10, (H, W, 3)).astype(np.int16)
+        arr = np.clip(base + noise, 0, 255).astype(np.uint8)
+        return Image.fromarray(arr)
+
+    def _canonical_parts(self, W=640, H=480):
+        base = {
             "seat": [200, 220, 440, 280],
             "back": [210, 120, 430, 220],
             "front_left_leg": [210, 280, 240, 390],
@@ -148,544 +67,367 @@ class EnhancedSyntheticDataGenerator:
             "armrest_left": [175, 170, 210, 205],
             "armrest_right": [430, 170, 465, 205],
         }
-        
-        # Scale to target dimensions
-        sx, sy = W / base_w, H / base_h
-        parts = {}
-        
-        for name, (x1, y1, x2, y2) in base_parts.items():
-            parts[name] = [
-                int(x1 * sx), int(y1 * sy),
-                int(x2 * sx), int(y2 * sy)
-            ]
-        
-        return parts
-    
-    def _apply_transform(self, parts: Dict, W: int, H: int) -> Dict:
-        """Apply random transformation (scale, rotate, translate) for variation."""
+        sx, sy = W / 640, H / 480
+        return {k: [int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)] for k, (x1, y1, x2, y2) in base.items()}
+
+    def _transform(self, parts, W, H):
         xs = [c for b in parts.values() for c in (b[0], b[2])]
         ys = [c for b in parts.values() for c in (b[1], b[3])]
         cx = (min(xs) + max(xs)) / 2
         cy = (min(ys) + max(ys)) / 2
-        
-        scale = random.uniform(0.82, 1.15)
-        dx = random.randint(-20, 20)
-        dy = random.randint(-20, 20)
-        
+        scale = random.uniform(0.85, 1.15)
+        dx = random.randint(-25, 25)
+        dy = random.randint(-25, 25)
         out = {}
         for name, (x1, y1, x2, y2) in parts.items():
             nx1 = (x1 - cx) * scale + cx + dx
             nx2 = (x2 - cx) * scale + cx + dx
             ny1 = (y1 - cy) * scale + cy + dy
             ny2 = (y2 - cy) * scale + cy + dy
-            nx1 = max(0, min(W - 1, nx1))
+            nx1 = max(0, min(W - 2, nx1))
             nx2 = max(nx1 + 2, min(W - 1, nx2))
-            ny1 = max(0, min(H - 1, ny1))
+            ny1 = max(0, min(H - 2, ny1))
             ny2 = max(ny1 + 2, min(H - 1, ny2))
             out[name] = [int(nx1), int(ny1), int(nx2), int(ny2)]
         return out
-    
-    # =====================================================================
-    # DAMAGE RENDERING
-    # =====================================================================
-    
-    def _sample_subbox(self, box: List, scale_range: Tuple = (0.4, 0.85)) -> List:
-        """Sample a damage box within a part boundary - LARGER for better detection."""
-        x1, y1, x2, y2 = box
-        w, h = x2 - x1, y2 - y1
-        
-        if w < 5 or h < 5:
-            return box  # Part too small
-        
-        #Use larger scale range (40-85% of part size) to make damages more visible
-        # This ensures damages are large enough to be detected
-        sw = random.uniform(*scale_range)
-        sh = random.uniform(*scale_range)
-        
-        # Ensure minimum damage size (at least 20x20 pixels)
-        min_w, min_h = max(20, w * 0.3), max(20, h * 0.3)
-        sw = max(sw, min_w / w) if w > 0 else sw
-        sh = max(sh, min_h / h) if h > 0 else sh
-        
-        bw, bh = w * sw, h * sh
-        sx = random.uniform(x1, max(x1 + 1, x2 - bw))
-        sy = random.uniform(y1, max(y1 + 1, y2 - bh))
-        
-        bx1 = int(sx)
-        by1 = int(sy)
-        bx2 = int(sx + bw)
-        by2 = int(sy + bh)
-        
-        bx2 = max(bx2, bx1 + 4)
-        by2 = max(by2, by1 + 4)
-        
-        return [bx1, by1, bx2, by2]
-    
-    def _contrast_color(self, color: str) -> str:
-        """Get contrasting color (black or white) for text on background."""
+
+    def _rotate_boxes(self, parts, W, H, angle_deg):
+        """Transform part boxes by the same rotation as img.rotate(-angle_deg).
+        Image was rotated by -angle_deg around (W/2, H/2); so point (px,py) moved to R_{-angle}(px,py)."""
+        cx, cy = W / 2, H / 2
+        rad = math.radians(-angle_deg)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        out = {}
+        for name, (x1, y1, x2, y2) in parts.items():
+            xs, ys = [], []
+            for px, py in [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]:
+                dx, dy = px - cx, py - cy
+                nx = cx + dx * cos_a - dy * sin_a
+                ny = cy + dx * sin_a + dy * cos_a
+                xs.append(nx)
+                ys.append(ny)
+            nx1 = max(0, min(W - 1, int(math.floor(min(xs)))))
+            ny1 = max(0, min(H - 1, int(math.floor(min(ys)))))
+            nx2 = max(nx1 + 1, min(W, int(math.ceil(max(xs)))))
+            ny2 = max(ny1 + 1, min(H, int(math.ceil(max(ys)))))
+            out[name] = [nx1, ny1, nx2, ny2]
+        return out
+
+    def _homography_from_quad_to_rect(self, tl, bl, br, tr, W, H):
+        """Compute 3x3 homography H that maps quad (tl,bl,br,tr) -> (0,0), (0,H), (W,H), (W,0)."""
+        src = np.array([tl, bl, br, tr], dtype=np.float64)
+        dst = np.array([[0, 0], [0, H], [W, H], [W, 0]], dtype=np.float64)
+        A = []
+        for i in range(4):
+            x, y = src[i, 0], src[i, 1]
+            u, v = dst[i, 0], dst[i, 1]
+            A.append([x, y, 1, 0, 0, 0, -u * x, -u * y, -u])
+            A.append([0, 0, 0, x, y, 1, -v * x, -v * y, -v])
+        A = np.array(A)
+        _, _, Vt = np.linalg.svd(A)
+        H = Vt[-1].reshape(3, 3)
+        H = H / H[2, 2]
+        return H
+
+    def _apply_perspective_boxes(self, parts, H_mat, W, H_img):
+        """Transform each part box's 4 corners by homography H; return new axis-aligned boxes."""
+        out = {}
+        for name, (x1, y1, x2, y2) in parts.items():
+            xs, ys = [], []
+            for px, py in [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]:
+                p = np.array([px, py, 1.0])
+                q = H_mat @ p
+                q = q / q[2]
+                xs.append(q[0])
+                ys.append(q[1])
+            nx1 = max(0, min(W - 1, int(math.floor(min(xs)))))
+            ny1 = max(0, min(H_img - 1, int(math.floor(min(ys)))))
+            nx2 = max(nx1 + 1, min(W, int(math.ceil(max(xs)))))
+            ny2 = max(ny1 + 1, min(H_img, int(math.ceil(max(ys)))))
+            out[name] = [nx1, ny1, nx2, ny2]
+        return out
+
+    def _apply_perspective(self, img, parts, W, H):
+        """Slight trapezoid warp: source quad -> rectangle. Updates part boxes via homography."""
+        max_shift = 14
+        tl_x, tl_y = random.randint(0, max_shift), random.randint(0, max_shift)
+        bl_x, bl_y = random.randint(0, max_shift), H - 1 - random.randint(0, max_shift)
+        br_x, br_y = W - 1 - random.randint(0, max_shift), H - 1 - random.randint(0, max_shift)
+        tr_x, tr_y = W - 1 - random.randint(0, max_shift), random.randint(0, max_shift)
+        data = (tl_x, tl_y, bl_x, bl_y, br_x, br_y, tr_x, tr_y)
         try:
-            r, g, b = ImageColor.getrgb(color)
-            brightness = (r * 299 + g * 587 + b * 114) / 1000
-            return "black" if brightness > 130 else "white"
-        except:
-            return "black"
-    
-    def _draw_missing(self, draw: ImageDraw.ImageDraw, box: List, color: str):
-        """Draw missing damage (hole/void) - VERY VISIBLE."""
-        x1, y1, x2, y2 = box
-        # Bold red background to show missing part
-        draw.rectangle([x1, y1, x2, y2], fill="#FF0000", outline="black", width=4)
-        # Draw large X pattern to indicate missing
-        draw.line([(x1, y1), (x2, y2)], fill="black", width=6)
-        draw.line([(x1, y2), (x2, y1)], fill="black", width=6)
-        # Add "MISSING" indicator if space allows
-        if (x2 - x1) > 30 and (y2 - y1) > 30:
-            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            for offset_x in range(-10, 11, 5):
-                for offset_y in range(-10, 11, 5):
-                    draw.point((cx + offset_x, cy + offset_y), fill="white")
-    
-    def _draw_broken(self, draw: ImageDraw.ImageDraw, box: List, color: str):
-        """Draw broken damage (shattered/fractured) - VERY VISIBLE."""
-        x1, y1, x2, y2 = box
-        
-        # Bold dark red/orange fill for break - much more visible
-        draw.rectangle([x1, y1, x2, y2], fill="#CC0000", outline="black", width=3)
-        
-        # Draw multiple bold jagged cracks
-        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-        
-        # Horizontal jagged break line
-        points = []
-        for x in range(x1, x2 + 1, max(1, (x2 - x1) // 6)):
-            y = cy + random.randint(-8, 8)
-            points.append((x, y))
-        if len(points) > 1:
-            draw.line(points, fill="black", width=5)
-        
-        # Multiple radiating cracks from center
-        for _ in range(5):
-            angle = random.uniform(0, 2 * np.pi)
-            max_length = max(15, min(x2-x1, y2-y1) // 2)
-            length = random.randint(15, max(15, max_length))
-            ex = int(cx + length * np.cos(angle))
-            ey = int(cy + length * np.sin(angle))
-            ex = max(x1, min(x2, ex))
-            ey = max(y1, min(y2, ey))
-            draw.line([cx, cy, ex, ey], fill="black", width=4)
-    
-    def _draw_cracked(self, draw: ImageDraw.ImageDraw, box: List, color: str):
-        """Draw cracked damage (lines/fractures) - VERY VISIBLE."""
-        x1, y1, x2, y2 = box
-        
-        # Draw yellow/orange background to highlight crack area
-        draw.rectangle([x1, y1, x2, y2], fill="#FFAA00", outline="black", width=3)
-        
-        # Multiple bold black cracks
-        for _ in range(5):
-            start_x = random.randint(x1, x2)
-            start_y = random.randint(y1, y2)
-            
-            # Draw zigzag crack line - much bolder
-            cx, cy = start_x, start_y
-            for _ in range(4):
-                nx = cx + random.randint(-20, 20)
-                ny = cy + random.randint(8, 25)
-                nx = max(x1, min(x2, nx))
-                ny = max(y1, min(y2, ny))
-                draw.line([cx, cy, nx, ny], fill="black", width=5)
-                cx, cy = nx, ny
-    
-    def _draw_scratched(self, draw: ImageDraw.ImageDraw, box: List, color: str):
-        """Draw scratched damage (surface marks) - VERY VISIBLE."""
-        x1, y1, x2, y2 = box
-        
-        # Gray/silver background to show scratched area
-        draw.rectangle([x1, y1, x2, y2], fill="#888888", outline="black", width=3)
-        
-        # Multiple bold white scratch marks on gray background
-        num_scratches = random.randint(6, 10)
-        for _ in range(num_scratches):
-            sx = x1 + random.randint(0, max(1, x2 - x1))
-            sy = y1 + random.randint(0, max(1, y2 - y1))
-            max_length = max(25, min(60, max(x2-x1, y2-y1)))
-            length = random.randint(25, max_length)
-            angle = random.uniform(0, np.pi)
-            
-            ex = int(sx + length * np.cos(angle))
-            ey = int(sy + length * np.sin(angle))
-            ex = max(x1, min(x2, ex))
-            ey = max(y1, min(y2, ey))
-            
-            # Bold white scratches
-            draw.line([sx, sy, ex, ey], fill="white", width=4)
-            # Add shadow for depth
-            draw.line([sx+1, sy+1, ex+1, ey+1], fill="black", width=2)
-    
-    def _draw_loose(self, draw: ImageDraw.ImageDraw, box: List, color: str):
-        """Draw loose damage (misalignment/separation) - VERY VISIBLE."""
-        x1, y1, x2, y2 = box
-        
-        # Bold orange/yellow fill to show loose area
-        draw.rectangle([x1, y1, x2, y2], fill="#FFA500", outline="black", width=4)
-        
-        # Draw wavy/offset lines to show looseness
-        mid_y = (y1 + y2) // 2
-        points = []
-        for x in range(x1, x2 + 1, max(1, (x2 - x1) // 8)):
-            y_offset = 8 * np.sin((x - x1) / max(1, (x2 - x1)) * 2 * np.pi)
-            points.append((x, int(mid_y + y_offset)))
-        
-        if len(points) > 1:
-            draw.line(points, fill="black", width=5)
-        
-        # Add arrows/indicators showing movement
-        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-        arrow_len = 10
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            draw.line(
-                [cx, cy, cx + dx * arrow_len, cy + dy * arrow_len],
-                fill="red", width=4
+            out = img.transform(img.size, Image.QUAD, data, resample=Image.BICUBIC)
+        except Exception:
+            return img, parts, W, H
+        if out is None:
+            return img, parts, W, H
+        try:
+            H_mat = self._homography_from_quad_to_rect(
+            (tl_x, tl_y), (bl_x, bl_y), (br_x, br_y), (tr_x, tr_y), W, H
             )
-    
-    def _draw_damage(self, draw: ImageDraw.ImageDraw, box: List, 
-                     damage_type: str, base_color: str):
-        """Draw damage on image."""
-        handlers = {
-            "missing": self._draw_missing,
-            "broken": self._draw_broken,
-            "cracked": self._draw_cracked,
-            "scratched": self._draw_scratched,
-            "loose": self._draw_loose
-        }
-        
-        handler = handlers.get(damage_type, self._draw_missing)
-        handler(draw, box, base_color)
-    
-    # =====================================================================
-    # DATASET GENERATION
-    # =====================================================================
-    
-    def generate_dataset(
-        self,
-        N: int = 2000,
-        multi_damage_ratio: float = 0.15,
-        val_ratio: float = 0.2,
-        balance: bool = False,
-        min_per_class: int = 40,
-    ):
-        """
-        Generate N synthetic images with damage annotations.
-        
-        Args:
-            N: Total number of images to generate (excluding balance top-up).
-            multi_damage_ratio: Fraction of images with multiple damages (0.0-1.0).
-            val_ratio: Fraction to use as validation (0.0-0.5). Writes annotations_train.json and annotations_val.json.
-            balance: If True, add extra images so each (part, damage_type) has at least min_per_class.
-            min_per_class: Minimum samples per (part, damage_type) when balance=True.
-        """
-        images_dir = os.path.join(self.output_dir, "images")
-        os.makedirs(images_dir, exist_ok=True)
-        annotations = []
-        
-        print(f"Generating {N} synthetic images (multi-damage ratio: {multi_damage_ratio:.0%})")
-        
-        for idx in tqdm(range(N)):
-            W, H = 640, 480
-            
-            # Generate background
-            bg = self._generate_background(W, H)
-            img = bg
+            new_parts = self._apply_perspective_boxes(parts, H_mat, W, H)
+            return out, new_parts, W, H
+        except Exception:
+            return img, parts, W, H
+
+    def _apply_depth_shading(self, img):
+        """Add simple depth-like shading (darker on one side)."""
+        W, H = img.size
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        # Darken one corner/side
+        which = random.choice(["top", "bottom", "left", "right"])
+        alpha = random.randint(15, 40)
+        if which == "top":
+            for y in range(H):
+                a = int(alpha * (1 - y / H))
+                draw.line([(0, y), (W, y)], fill=(0, 0, 0, a))
+        elif which == "bottom":
+            for y in range(H):
+                a = int(alpha * (y / H))
+                draw.line([(0, y), (W, y)], fill=(0, 0, 0, a))
+        elif which == "left":
+            for x in range(W):
+                a = int(alpha * (1 - x / W))
+                draw.line([(x, 0), (x, H)], fill=(0, 0, 0, a))
+        else:
+            for x in range(W):
+                a = int(alpha * (x / W))
+                draw.line([(x, 0), (x, H)], fill=(0, 0, 0, a))
+        return Image.alpha_composite(img, overlay)
+
+    def _apply_shadow(self, img, W, H):
+        """Draw a soft shadow (ellipse or blob) somewhere."""
+        overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        xc = random.randint(W // 4, 3 * W // 4)
+        yc = random.randint(H // 4, 3 * H // 4)
+        rw = random.randint(30, 80)
+        rh = random.randint(20, 50)
+        draw.ellipse([xc - rw, yc - rh, xc + rw, yc + rh], fill=(0, 0, 0, random.randint(25, 55)))
+        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=random.uniform(8, 20)))
+        return Image.alpha_composite(img, overlay)
+
+    def _apply_occlusion(self, img, parts, W, H):
+        """Random partial occlusion: small rectangle with background-like color over the image."""
+        num = random.randint(0, 2)
+        for _ in range(num):
+            x1 = random.randint(0, W - 40)
+            y1 = random.randint(0, H - 40)
+            w = random.randint(15, 50)
+            h = random.randint(15, 50)
+            x2 = min(W, x1 + w)
+            y2 = min(H, y1 + h)
+            c = random.randint(160, 230)
+            color = (c, c, c, random.randint(200, 255))
             draw = ImageDraw.Draw(img)
-            
-            # Get chair parts at this resolution
-            parts = self._canonical_parts(W, H)
-            parts = self._apply_transform(parts, W, H)
-            
-            # Draw chair parts
-            for part_name, (x1, y1, x2, y2) in parts.items():
-                color = self.part_colors[part_name]
-                
-                # Draw part with slight shading variation
-                draw.rectangle([x1, y1, x2, y2], fill=color, outline="black", width=2)
-                
-                # Add subtle shading
-                if random.random() > 0.5:
-                    shade_color = tuple(max(0, c - 20) for c in ImageColor.getrgb(color))
-                    shade_width = max(1, (x2 - x1) // 20)
-                    draw.rectangle([x2 - shade_width, y1, x2, y2], 
-                                 fill=shade_color, outline=None)
-            
-            # Decide number of damages
-            is_multi = random.random() < multi_damage_ratio
-            num_damages = random.randint(2, 3) if is_multi else 1
-            
-            # Select parts to damage (no duplicates)
-            available_parts = list(self.chair_parts)
-            damage_parts = random.sample(available_parts, min(num_damages, len(available_parts)))
-            
-            damages = []
-            for part_choice in damage_parts:
-                damage_type = random.choice(self.damage_types)
-                
-                # Generate damage box
-                damage_box = self._sample_subbox(parts[part_choice])
-                
-                # Draw damage
-                self._draw_damage(draw, damage_box, damage_type, 
-                                self.part_colors[part_choice])
-                
-                # Record annotation
-                damages.append({
-                    "part": part_choice,
-                    "type": damage_type,
-                    "bbox": damage_box
-                })
-                
-                # Update statistics
-                self.stats["damage_distribution"][damage_type] += 1
-                self.stats["part_distribution"][part_choice] += 1
-            
-            # Update multi-damage statistics
-            if len(damages) > 1:
-                self.stats["multi_damage"] += 1
-            else:
-                self.stats["single_damage"] += 1
-            
-            # Save image
-            fname = f"synthetic_{idx:05d}.jpg"
-            img.save(os.path.join(images_dir, fname), quality=95)
-            
-            # Create annotation
-            annotation = {
-                "filename": fname,
-                "width": W,
-                "height": H,
-                "parts": parts,
-                "damages": damages
-            }
-            annotations.append(annotation)
-        
-        # Optional: balance (part, damage_type) by adding extra samples
-        if balance:
-            count_per = {}
-            for pt in self.chair_parts:
-                for dt in self.damage_types:
-                    count_per[(pt, dt)] = 0
-            for ann in annotations:
-                for d in ann.get("damages", []):
-                    key = (d["part"], d["type"])
-                    count_per[key] = count_per.get(key, 0) + 1
-            needed = []
-            for (pt, dt), c in count_per.items():
-                if c < min_per_class:
-                    needed.extend([(pt, dt)] * (min_per_class - c))
-            if needed:
-                random.shuffle(needed)
-                start_idx = len(annotations)
-                print(f"Adding {len(needed)} balanced samples for under-represented (part, damage_type)...")
-                for i, (part_choice, damage_type) in enumerate(tqdm(needed)):
-                    idx = start_idx + i
-                    W, H = 640, 480
-                    bg = self._generate_background(W, H)
-                    img = bg
-                    draw = ImageDraw.Draw(img)
-                    parts = self._canonical_parts(W, H)
-                    parts = self._apply_transform(parts, W, H)
-                    for pname, (x1, y1, x2, y2) in parts.items():
-                        color = self.part_colors[pname]
-                        draw.rectangle([x1, y1, x2, y2], fill=color, outline="black", width=2)
-                    damage_box = self._sample_subbox(parts[part_choice])
-                    self._draw_damage(draw, damage_box, damage_type, self.part_colors[part_choice])
-                    fname = f"synthetic_bal_{idx:05d}.jpg"
-                    img.save(os.path.join(images_dir, fname), quality=95)
-                    annotations.append({
-                        "filename": fname,
-                        "width": W,
-                        "height": H,
-                        "parts": parts,
-                        "damages": [{"part": part_choice, "type": damage_type, "bbox": damage_box}],
-                    })
-                    self.stats["damage_distribution"][damage_type] += 1
-                    self.stats["part_distribution"][part_choice] += 1
-        
-        # Negative samples (no damage) before split so train/val both get them
-        n_neg = max(100, len(annotations) // 10)
-        self.generate_negative_samples(n_neg, annotations)
-        
-        self.stats["total_images"] = len(annotations)
-        
-        # Save full annotations
-        ann_path = os.path.join(self.output_dir, "annotations.json")
-        with open(ann_path, "w", encoding="utf-8") as f:
-            json.dump(annotations, f, indent=2)
-        
-        print(f"[OK] Saved {len(annotations)} images to {images_dir}/")
-        print(f"[OK] Saved annotations to {ann_path}")
-        
-        # Train/val split (reproducible)
-        if 0 < val_ratio < 1 and len(annotations) >= 10:
-            random.Random(42).shuffle(annotations)
-            n_val = int(len(annotations) * val_ratio)
-            val_ann = annotations[:n_val]
-            train_ann = annotations[n_val:]
-            train_path = os.path.join(self.output_dir, "annotations_train.json")
-            val_path = os.path.join(self.output_dir, "annotations_val.json")
-            with open(train_path, "w", encoding="utf-8") as f:
-                json.dump(train_ann, f, indent=2)
-            with open(val_path, "w", encoding="utf-8") as f:
-                json.dump(val_ann, f, indent=2)
-            print(f"[OK] Train split: {len(train_ann)} -> {train_path}")
-            print(f"[OK] Val split:   {len(val_ann)} -> {val_path}")
-        
-        # Save statistics
-        stats_path = os.path.join(self.output_dir, "stats.json")
-        with open(stats_path, "w", encoding="utf-8") as f:
-            json.dump(self.stats, f, indent=2)
-        
-        self._print_statistics()
-        print(f"[OK] Saved statistics to {stats_path}")
-        # Save a grid of sample images for inspection
-        try:
-            import math
-            W, H = 640, 480
-            grid_size = min(25, len(annotations))
-            grid_cols = 5
-            grid_rows = math.ceil(grid_size / grid_cols)
-            grid_img = Image.new('RGB', (grid_cols * W, grid_rows * H))
-            for i in range(grid_size):
-                fname = annotations[i]["filename"]
-                img_path = os.path.join(images_dir, fname)
-                if os.path.exists(img_path):
-                    img_sample = Image.open(img_path).resize((W, H))
-                    x = (i % grid_cols) * W
-                    y = (i // grid_cols) * H
-                    grid_img.paste(img_sample, (x, y))
-            grid_img.save(os.path.join(self.output_dir, "sample_grid.jpg"), quality=95)
-            print("[OK] Saved sample grid to sample_grid.jpg")
-        except Exception as e:
-            print(f"[WARN] Could not save sample grid: {e}")
-    
-    def generate_negative_samples(self, N: int = 200, annotations: list = None):
-        """Generate images with no damage for negative samples.
-        
-        These images show undamaged chairs, helping the model learn to 
-        distinguish between damaged and undamaged parts.
-        
-        Args:
-            N: Number of negative samples to generate
-            annotations: Existing annotations list to append to
-        """
-        if annotations is None:
-            annotations = []
-        
-        images_dir = os.path.join(self.output_dir, "images")
+            draw.rectangle([x1, y1, x2, y2], fill=color)
+        return img
+
+    def _subbox(self, box, smin=0.25, smax=0.7, extend=0, img_bounds=(640, 480)):
+        """Subregion inside box. If extend>0, allow region to extend outside box (for edge-crossing damage)."""
+        x1, y1, x2, y2 = box
+        Wb, Hb = img_bounds
+        w = max(4, x2 - x1)
+        h = max(4, y2 - y1)
+        sw = random.uniform(smin, smax)
+        sh = random.uniform(smin, smax)
+        bw = max(8, int(w * sw))
+        bh = max(8, int(h * sh))
+        sx = random.randint(int(x1), max(int(x1), int(x2) - bw))
+        sy = random.randint(int(y1), max(int(y1), int(y2) - bh))
+        if extend > 0:
+            ex = random.randint(0, min(extend, max(1, bw // 2)))
+            ey = random.randint(0, min(extend, max(1, bh // 2)))
+            return [
+                max(0, sx - ex), max(0, sy - ey),
+                min(Wb, sx + bw + ex), min(Hb, sy + bh + ey),
+            ]
+        return [sx, sy, sx + bw, sy + bh]
+
+    def _draw_cracks(self, img, box):
+        draw = ImageDraw.Draw(img)
+        x1, y1, x2, y2 = box
+        for _ in range(random.randint(2, 5)):
+            pts = []
+            px = random.randint(x1, x2)
+            py = random.randint(y1, y2)
+            pts.append((px, py))
+            for _ in range(random.randint(3, 6)):
+                px = max(x1, min(x2, px + random.randint(-20, 20)))
+                py = max(y1, min(y2, py + random.randint(8, 25)))
+                pts.append((px, py))
+            draw.line(pts, fill=(20, 20, 20), width=random.randint(2, 4))
+
+    def _draw_scratches(self, img, box):
+        draw = ImageDraw.Draw(img)
+        x1, y1, x2, y2 = box
+        for _ in range(random.randint(6, 12)):
+            sx = random.randint(x1, x2)
+            sy = random.randint(y1, y2)
+            ex = max(x1, min(x2, sx + random.randint(-60, 60)))
+            ey = max(y1, min(y2, sy + random.randint(-30, 30)))
+            draw.line([sx, sy, ex, ey], fill=(230, 230, 230), width=random.randint(1, 2))
+
+    def _draw_broken(self, img, box):
+        x1, y1, x2, y2 = box
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(overlay)
+        poly = [(random.randint(x1, x2), random.randint(y1, y2)) for _ in range(8)]
+        d.polygon(poly, fill=(30, 30, 30, 160))
+        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=1.2))
+        return Image.alpha_composite(img, overlay.convert("RGBA"))
+
+    def _apply_missing(self, img, part_box):
+        x1, y1, x2, y2 = part_box
+        patch = self._subbox(part_box, 0.35, 0.9)
+        px1, py1, px2, py2 = patch
+        h, w = py2 - py1, px2 - px1
+        if h < 1 or w < 1:
+            return
+        noise = np.random.normal(0, 8, (h, w, 3)).astype(np.int16)
+        base = np.full((h, w, 3), 200, dtype=np.int16)
+        arr = np.clip(base + noise, 0, 255).astype(np.uint8)
+        img.paste(Image.fromarray(arr), (px1, py1))
+
+    def generate(self, N=5000, val_ratio=0.2, multi_damage_ratio=0.2, seed=42):
+        random.seed(seed)
+        np.random.seed(seed)
         W, H = 640, 480
-        
-        print(f"Generating {N} negative samples (no damage)...")
-        for idx in range(N):
-            bg = self._generate_background(W, H)
-            img = bg
+        anns = []
+        for i in tqdm(range(N)):
+            img = self._bg(W, H).convert("RGBA")
             draw = ImageDraw.Draw(img)
-            parts = self._canonical_parts(W, H)
-            parts = self._apply_transform(parts, W, H)
-            for part_name, (x1, y1, x2, y2) in parts.items():
-                color = self.part_colors[part_name]
-                draw.rectangle([x1, y1, x2, y2], fill=color, outline="black", width=2)
-            fname = f"negative_{idx:05d}.jpg"
-            img.save(os.path.join(images_dir, fname), quality=95)
-            
-            # Add annotation with parts but NO damages
-            annotations.append({
+            parts = self._transform(self._canonical_parts(W, H), W, H)
+
+            for p, (x1, y1, x2, y2) in parts.items():
+                c = ImageColor.getrgb(self.part_colors[p])
+                jitter = random.randint(-18, 18)
+                c = tuple(int(max(0, min(255, v + jitter))) for v in c)
+                draw.rectangle([x1, y1, x2, y2], fill=c + (255,), outline=(0, 0, 0, 255), width=2)
+
+            part_damage = {p: "none" for p in PARTS}
+            damages = []
+            k = random.randint(2, 3) if random.random() < multi_damage_ratio else 1
+            damaged_parts = random.sample(PARTS, min(k, len(PARTS)))
+
+            for p in damaged_parts:
+                dtype = random.choice(DAMAGE_TYPES[1:])
+                part_damage[p] = dtype
+                if dtype == "missing":
+                    self._apply_missing(img, parts[p])
+                else:
+                    # 40% of the time let damage extend past part edge (realistic: cracks at boundary)
+                    extend = random.randint(8, 22) if random.random() < 0.4 else 0
+                    box = self._subbox(parts[p], extend=extend, img_bounds=(W, H))
+                    if dtype == "cracked":
+                        self._draw_cracks(img, box)
+                    elif dtype == "scratched":
+                        self._draw_scratches(img, box)
+                    elif dtype == "broken":
+                        img = self._draw_broken(img, box)
+                    elif dtype == "loose":
+                        x1, y1, x2, y2 = parts[p]
+                        shiftx = random.randint(-6, 6)
+                        shifty = random.randint(-6, 6)
+                        parts[p] = [
+                            max(0, x1 + shiftx), max(0, y1 + shifty),
+                            min(W - 1, x2 + shiftx), min(H - 1, y2 + shifty),
+                        ]
+                damages.append({"part": p, "type": dtype})
+
+            # Domain randomization: rotation (±5°), perspective, shading, shadow, occlusion
+            # Bboxes are updated to match so labels stay correct.
+            if random.random() < 0.5:
+                angle = random.uniform(-5, 5)
+                cx, cy = W / 2, H / 2
+                try:
+                    rotated = img.rotate(
+                        -angle,
+                        center=(cx, cy),
+                        expand=False,
+                        resample=Image.BICUBIC,
+                        fillcolor=(180, 180, 180),
+                    )
+                except TypeError:
+                    try:
+                        rotated = img.rotate(
+                            -angle,
+                            center=(cx, cy),
+                            expand=False,
+                            resample=Image.BICUBIC,
+                            fill=(180, 180, 180),
+                        )
+                    except Exception:
+                        rotated = None
+                except Exception:
+                    rotated = None
+                if rotated is not None:
+                    img = rotated
+                    parts = self._rotate_boxes(parts, W, H, angle)
+            if random.random() < 0.35:
+                img, parts, W, H = self._apply_perspective(img, parts, W, H)
+                assert img is not None, "_apply_perspective returned None image"
+            if random.random() < 0.4:
+                img = self._apply_depth_shading(img)
+                assert img is not None, "_apply_depth_shading returned None"
+            if random.random() < 0.3:
+                img = self._apply_shadow(img, W, H)
+                assert img is not None, "_apply_shadow returned None"
+            if random.random() < 0.25:
+                img = self._apply_occlusion(img, parts, W, H)
+                assert img is not None, "_apply_occlusion returned None"
+
+            if random.random() < 0.35:
+                img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.2, 1.0)))
+            if random.random() < 0.25:
+                arr = np.array(img.convert("RGB"), dtype=np.int16)
+                arr = np.clip(arr + np.random.normal(0, 6, arr.shape), 0, 255).astype(np.uint8)
+                img = Image.fromarray(arr).convert("RGBA")
+
+            if img is None:
+                raise RuntimeError(
+                    "img became None during generation; check rotate, _apply_perspective, "
+                    "_apply_depth_shading, _apply_shadow, _apply_occlusion (e.g. .paste() returns None)"
+                )
+
+            fname = f"img_{i:06d}.jpg"
+            img.convert("RGB").save(os.path.join(self.img_dir, fname), quality=random.randint(80, 95))
+            anns.append({
                 "filename": fname,
                 "width": W,
                 "height": H,
                 "parts": parts,
-                "damages": []  # No damage in negative samples
+                "part_damage": part_damage,
+                "damages": damages,
             })
-        
-        # Re-save annotations with negative samples included
-        ann_path = os.path.join(self.output_dir, "annotations.json")
-        with open(ann_path, "w") as f:
-            json.dump(annotations, f, indent=2)
-        print(f"[OK] Added {N} negative samples to annotations")
-    
-    def _print_statistics(self):
-        """Print generation statistics."""
-        print("\n" + "="*60)
-        print("DATASET STATISTICS")
-        print("="*60)
-        print(f"Total images: {self.stats['total_images']}")
-        print(f"Single damage: {self.stats['single_damage']} ({100*self.stats['single_damage']/self.stats['total_images']:.1f}%)")
-        print(f"Multi damage: {self.stats['multi_damage']} ({100*self.stats['multi_damage']/self.stats['total_images']:.1f}%)")
-        
-        print("\nDamage distribution:")
-        total_damages = sum(self.stats["damage_distribution"].values())
-        for dtype, count in sorted(self.stats["damage_distribution"].items()):
-            pct = 100 * count / total_damages if total_damages > 0 else 0
-            print(f"  {dtype:12s}: {count:4d} ({pct:5.1f}%)")
-        
-        print("\nPart distribution:")
-        total_parts = sum(self.stats["part_distribution"].values())
-        for pname, count in sorted(self.stats["part_distribution"].items()):
-            pct = 100 * count / total_parts if total_parts > 0 else 0
-            print(f"  {pname:18s}: {count:4d} ({pct:5.1f}%)")
-        print("="*60 + "\n")
 
+        random.Random(seed).shuffle(anns)
+        nval = int(len(anns) * val_ratio)
+        val = anns[:nval]
+        train = anns[nval:]
+        os.makedirs(self.output_dir, exist_ok=True)
+        with open(os.path.join(self.output_dir, "annotations_train.json"), "w", encoding="utf-8") as f:
+            json.dump(train, f, indent=2)
+        with open(os.path.join(self.output_dir, "annotations_val.json"), "w", encoding="utf-8") as f:
+            json.dump(val, f, indent=2)
+        with open(os.path.join(self.output_dir, "annotations.json"), "w", encoding="utf-8") as f:
+            json.dump(anns, f, indent=2)
+        print(f"[OK] train={len(train)} val={len(val)} images={len(anns)} at {self.output_dir}")
 
-# =========================================================================
-# MAIN
-# =========================================================================
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="Generate enhanced synthetic damage dataset"
-    )
-    parser.add_argument(
-        "--samples", type=int, default=3000,
-        help="Number of images to generate (default: 3000)"
-    )
-    parser.add_argument(
-        "--multi_damage_ratio", type=float, default=0.15,
-        help="Fraction with multiple damages (default: 0.15)"
-    )
-    parser.add_argument(
-        "--output_dir", type=str, default="./data/synthetic_damage/",
-        help="Output directory (default: ./data/synthetic_damage/)"
-    )
-    parser.add_argument(
-        "--val_ratio", type=float, default=0.2,
-        help="Fraction of data for validation (0.2 = 80%% train / 20%% val). Writes annotations_train.json and annotations_val.json"
-    )
-    parser.add_argument(
-        "--balance", action="store_true",
-        help="Add extra samples so each (part, damage_type) has at least min_per_class (slower but better for rare classes)"
-    )
-    parser.add_argument(
-        "--min_per_class", type=int, default=40,
-        help="When --balance, minimum samples per (part, damage_type) (default: 40)"
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42,
-        help="Random seed for reproducibility"
-    )
-    
-    args = parser.parse_args()
-    
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    
-    generator = EnhancedSyntheticDataGenerator(args.output_dir)
-    generator.generate_dataset(
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--output_dir", default="./data/synth_v2")
+    ap.add_argument("--samples", type=int, default=8000)
+    ap.add_argument("--val_ratio", type=float, default=0.2)
+    ap.add_argument("--multi_damage_ratio", type=float, default=0.2)
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+    SyntheticChairGenV2(args.output_dir).generate(
         N=args.samples,
-        multi_damage_ratio=args.multi_damage_ratio,
         val_ratio=args.val_ratio,
-        balance=args.balance,
-        min_per_class=args.min_per_class,
+        multi_damage_ratio=args.multi_damage_ratio,
+        seed=args.seed,
     )
-
-
-# Backward compatibility alias
-SyntheticDataGenerator = EnhancedSyntheticDataGenerator
