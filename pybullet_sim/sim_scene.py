@@ -128,15 +128,13 @@ def spawn_simple_chair(damaged_part_name):
     # 1. Configuration (Dimensions & Colors)
     # ---------------------------------------------------------
    
-    # Chair base position - placed far enough from robot to allow arm clearance
-    # KUKA arm reach is ~0.8m, so placing chair at X=0.6 gives clearance
-    bx, by, bz = 0.65, 0.0, 0.0  # Chair base position (increased from 0.5 for better reach)
+    # Chair base position - Panda reach ~0.85m; place chair so all parts are reachable (x < 0.8)
+    bx, by, bz = 0.50, 0.0, 0.0  # Chair base: front parts ~0.72m, back ~0.28m from base
     
     # =========================================================================
     # REAL-WORLD SCALE CHAIR DIMENSIONS (meters)
     # =========================================================================
-    # A realistic chair that matches the KUKA robot's real-world scale.
-    # KUKA iiwa is ~1.3m tall, so the chair should be ~0.9m tall.
+    # A realistic chair that matches the Panda robot's real-world scale.
     # 
     # This fixes the "robot looks gigantic" problem - the issue was the
     # chair was toy-scale (20cm) while the robot was real-scale (1.3m).

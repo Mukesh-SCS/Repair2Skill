@@ -38,8 +38,8 @@ def main():
     ap.add_argument("--graph", default=None, help="(Optional) repair graph JSON")
     ap.add_argument(
         "--robot",
-        default="kuka",
-        help="Robot type identifier for sim_robot.load_robot"
+        default="panda",
+        help="Robot type (only 'panda' supported)"
     )
     ap.add_argument(
         "--damaged-part",
@@ -173,7 +173,7 @@ def main():
         if target_part not in parts:
             print(f"[SKIP] Part '{target_part}' not in simulation, skipping step {step.get('step_id')}")
             continue
-        execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, original_positions=original_positions)
+        execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, original_positions=original_positions, robot_type=args.robot)
         
         # Legacy screenshot support (if enabled)
         if screenshot_path:

@@ -1,42 +1,21 @@
 """Collision-aware motion planning for PyBullet robot simulation.
 
-This module provides collision checking and safe motion primitives to prevent
-the robot arm from colliding with chair parts during repair operations.
+Prevents the robot arm and gripper from colliding with chair parts during
+repair operations (inspect, remove, replace, tighten, clean).
 
-ARCHITECTURAL DESIGN (CRITICAL):
---------------------------------
-This module now enforces PLANNING/EXECUTION CONSISTENCY:
-- Paths are collision-checked in JOINT SPACE
-- Paths are EXECUTED in JOINT SPACE (NOT Cartesian IK)
-- This guarantees the executed path matches the validated path
+Design:
+- Paths are planned and collision-checked in JOINT SPACE, then executed in
+  JOINT SPACE (no Cartesian IK after check), so the executed path matches
+  the validated path.
+- Collision checks use PyBullet getClosestPoints: robot links and optional
+  visual gripper body vs chair parts, plus self-collision. A safety margin
+  (3 cm) keeps the arm clear of the chair.
+- Motion strategy: (1) Direct interpolated joint path; (2) pre-approach
+  then approach; (3) RRT fallback if blocked.
 
-COLLISION CHECKING STRATEGY:
-----------------------------
-1. Use PyBullet's native collision detection (getClosestPoints, getContactPoints)
-2. Check robot links vs environment obstacles (chair parts)
-3. Check robot self-collision (link vs link)
-4. Use INFLATED safety margin (3cm) for conservative collision detection
-
-MOTION PLANNING STRATEGY (3-PHASE):
------------------------------------
-Phase 1: FREE-SPACE MOTION
-    - Large steps allowed
-    - RRT planning when direct path blocked
-    - No contact expected
-
-Phase 2: GUARDED APPROACH  
-    - Linear in TCP frame
-    - Step size ≤ 2mm
-    - Abort on ANY contact
-
-Phase 3: CONTACT-CONTROLLED CLOSURE
-    - No Cartesian motion
-    - Only finger joints move
-    - Contact-based termination
-
-If direct path fails, use lightweight sampling-based fallback (RRT-like).
-
-Author: Collision-aware motion module for Repair2Skill
+Use move_ee_collision_safe() for general collision-safe moves, and
+execute_three_phase_motion() for guarded approach-to-grasp. The plan
+executor uses these so that grab and replace do not collide with the chair.
 """
 
 import pybullet as p
@@ -48,8 +27,9 @@ from typing import List, Tuple, Optional, Dict, Set
 # CONFIGURATION - INFLATED MARGINS FOR SAFETY
 # ============================================================================
 
-# Safety margin for collision detection (meters) - balanced for planning
-COLLISION_SAFETY_MARGIN = 0.02  # 2cm - balance between safety and reachability
+# Safety margin for collision detection (meters) - balance reachability vs safety
+# 2.5cm: tight chair workspace (seat, armrests) needs reachability; still keeps arm clear
+COLLISION_SAFETY_MARGIN = 0.025
 
 # Maximum distance to check for collisions
 COLLISION_CHECK_DISTANCE = 0.05  # 5cm - detection range
@@ -60,8 +40,8 @@ APPROACH_SAFETY_MARGIN = 0.008  # 8mm - only used during final approach
 # Self-collision margin (tighter than obstacle margin - robot links are designed to be close)
 SELF_COLLISION_MARGIN = 0.003  # 3mm - robot links are designed to not touch
 
-# Number of interpolation steps for linear motion
-LINEAR_MOTION_STEPS = 25  # Increased for finer collision checking
+# Number of interpolation steps for linear motion (smoother = fewer collisions)
+LINEAR_MOTION_STEPS = 40
 
 # Guarded approach step size (meters) - VERY SMALL
 GUARDED_APPROACH_STEP = 0.002  # 2mm steps during guarded approach
@@ -79,7 +59,7 @@ JOINT_MAX_FORCE = 500  # N
 JOINT_MAX_VELOCITY = 2.0  # rad/s
 
 # IK parameters
-IK_MAX_CANDIDATES = 20  # Number of IK candidates to try before giving up
+IK_MAX_CANDIDATES = 35  # More candidates for tight chair workspace (seat, armrests)
 IK_JITTER_MAGNITUDE = 0.3  # radians - random offset for rest poses
 
 # ============================================================================
@@ -1063,7 +1043,7 @@ def get_movable_joint_indices(robot_id: int) -> List[int]:
 def execute_joint_trajectory(
     robot_id: int,
     joint_path: List[List[float]],
-    steps_per_waypoint: int = 30,
+    steps_per_waypoint: int = 45,
     max_force: float = JOINT_MAX_FORCE,
     max_velocity: float = JOINT_MAX_VELOCITY
 ) -> bool:
@@ -1248,9 +1228,10 @@ def move_ee_collision_safe(
     # Calculate steps per waypoint based on total desired steps
     steps_per_wp = max(10, steps // LINEAR_MOTION_STEPS)
     
-    # CHECK: Distance to target - if too close, disable RRT
-    # RRT is for free-space. Final 15cm uses deterministic linear approach.
-    dist_to_target = math.sqrt(sum((target_pos[i] - current_joints[i])**2 for i in range(3))) if len(current_joints) >= 3 else 999
+    # CHECK: Distance from current EE to target (use for RRT vs direct strategy)
+    ee_state = p.getLinkState(robot_id, ee_link, computeForwardKinematics=True)
+    current_ee_pos = list(ee_state[4])
+    dist_to_target = math.sqrt(sum((target_pos[i] - current_ee_pos[i])**2 for i in range(3)))
     use_rrt_near_object = use_rrt_fallback and dist_to_target > 0.15
     
     # =========================================================================
