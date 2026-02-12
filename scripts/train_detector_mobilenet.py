@@ -1,742 +1,462 @@
 """
-
+Train parts-only detector (SSDLite MobileNetV3) + damage classifier (ResNet18).
+Uses synth_v2 annotations: parts (boxes) + part_damage (per-part damage label).
 
 Usage:
-    
+  # Generate data first: python scripts/generate_synthetic_data.py --output_dir ./data/synth_v2 --samples 12000
+  # Train both (default):
+  python scripts/train_detector_mobilenet.py --task all
+  # Train parts detector only:
+  python scripts/train_detector_mobilenet.py --task parts --epochs_parts 80
+  # Train damage classifier only:
+  python scripts/train_detector_mobilenet.py --task damage --epochs_damage 30
 
-================================================================================
+Outputs:
+  models/damage_detection/parts_detector_ssd.pth
+  models/damage_detection/damage_classifier_resnet18.pth
+  models/damage_detection/parts_training_graph.png  (if --task parts or all)
+  models/damage_detection/damage_training_graph.png  (if --task damage or all)
 """
 
 import os
 import json
 import random
-import logging
-from typing import List, Dict, Tuple, Optional
 from pathlib import Path
-from datetime import datetime
 
-import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-import torchvision.transforms as transforms
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image, ImageFilter
 import torchvision.transforms.functional as TF
-import torchvision.ops as ops
+import torchvision.transforms as T
 from torchvision.models.detection.ssdlite import ssdlite320_mobilenet_v3_large
-from PIL import Image
-from tqdm import tqdm
-
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# =============================================================================
-# CONSTANTS
-# =============================================================================
+from torchvision.models import resnet18, MobileNet_V3_Large_Weights
+from torchvision.ops import box_iou
 
 PARTS = [
     "seat", "back",
     "front_left_leg", "front_right_leg",
     "back_left_leg", "back_right_leg",
-    "armrest_left", "armrest_right"
+    "armrest_left", "armrest_right",
 ]
+DAMAGE_TYPES = ["none", "missing", "cracked", "broken", "loose", "scratched"]
 
-DAMAGES = ["missing", "cracked", "broken", "loose", "scratched"]
-
-CLASSES = ["__background__"] + PARTS + DAMAGES
-NAME2IDX = {name: i for i, name in enumerate(CLASSES)}
-
-#1: INCREASED DAMAGE WEIGHTS FROM 2-2.5x to 10-12x
-CLASS_WEIGHTS = {
-    "__background__": 0.1,
-    # Parts (normalized weight)
-    "seat": 1.0, "back": 1.0,
-    "front_left_leg": 1.0, "front_right_leg": 1.0,
-    "back_left_leg": 1.0, "back_right_leg": 1.0,
-    "armrest_left": 1.0, "armrest_right": 1.0,
-    # Damages (MUCH HIGHER weight to prioritize learning)
-    "missing": 10.0, "cracked": 10.0, "broken": 12.0,  # broken is hardest to detect
-    "loose": 10.0, "scratched": 10.0
-}
-
-# =============================================================================
-# DATA AUGMENTATION
-# =============================================================================
-class AugmentationTransform:
-    """Advanced augmentation pipeline for object detection.
-    
-    CRITICAL: This transform must exactly match the inference preprocessing
-    to avoid domain gap. It:
-    1. Resizes while maintaining aspect ratio
-    2. Pads to square (320x320)
-    3. Normalizes with ImageNet mean/std
-    4. Adjusts bounding boxes for the padding offset
-    """
-    
-    def __init__(self, resize: int = 320, augment: bool = True):
-        self.resize = resize
-        self.augment = augment
-    
-    def __call__(self, img: Image.Image, boxes: list = None) -> Tuple[torch.Tensor, Tuple[float, float, int, int]]:
-        """Transform image and optionally adjust bounding boxes.
-        
-        Returns:
-            img_tensor: Transformed image tensor
-            transform_info: (scale_x, scale_y, pad_x, pad_y) for bbox adjustment
-        """
-        orig_w, orig_h = img.size
-        
-        # Store original for bbox calculation
-        flipped = False
-        
-        if self.augment:
-            if random.random() > 0.5:
-                brightness_factor = random.uniform(0.85, 1.15)
-                img = TF.adjust_brightness(img, brightness_factor)
-            
-            if random.random() > 0.5:
-                contrast_factor = random.uniform(0.85, 1.15)
-                img = TF.adjust_contrast(img, contrast_factor)
-            
-            if random.random() > 0.7:
-                angle = random.uniform(-5, 5)
-                img = TF.rotate(img, angle, expand=False)
-            
-            # DISABLE horizontal flip for chair detection - it breaks left/right leg labeling
-            # if random.random() > 0.5:
-            #     img = TF.hflip(img)
-            #     flipped = True
-            
-            if random.random() > 0.7:
-                saturation_factor = random.uniform(0.8, 1.2)
-                img = TF.adjust_saturation(img, saturation_factor)
-        
-        # Resize maintaining aspect ratio
-        img.thumbnail((self.resize, self.resize), Image.Resampling.LANCZOS)
-        new_w, new_h = img.size
-        
-        # Calculate scale factors AFTER thumbnail resize
-        sx = new_w / orig_w
-        sy = new_h / orig_h
-        
-        # Pad to square with gray background
-        img_resized = Image.new('RGB', (self.resize, self.resize), (128, 128, 128))
-        paste_x = (self.resize - new_w) // 2
-        paste_y = (self.resize - new_h) // 2
-        img_resized.paste(img, (paste_x, paste_y))
-        
-        img_tensor = TF.to_tensor(img_resized)
-        img_tensor = TF.normalize(
-            img_tensor,
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-        
-        # Return scale factors AND padding offsets for correct bbox adjustment
-        return img_tensor, (sx, sy, paste_x, paste_y)
+PART_CLASSES = ["__background__"] + PARTS
+PART_NAME2IDX = {n: i for i, n in enumerate(PART_CLASSES)}
+DMG_NAME2IDX = {n: i for i, n in enumerate(DAMAGE_TYPES)}
 
 
-# =============================================================================
-# ENHANCED DATASET
-# =============================================================================
-class EnhancedChairDataset(Dataset):
-    """Enhanced dataset with better bbox handling and augmentation."""
-    
-    def __init__(self, ann_path: str, img_dir: str, resize: int = 320, augment: bool = True):
-        with open(ann_path, "r") as f:
-            self.ann = json.load(f)
-        
+def _resize_pad_320(img: Image.Image):
+    orig_w, orig_h = img.size
+    target = 320
+    tmp = img.copy()
+    tmp.thumbnail((target, target), Image.Resampling.LANCZOS)
+    new_w, new_h = tmp.size
+    pad_x = (target - new_w) // 2
+    pad_y = (target - new_h) // 2
+    out = Image.new("RGB", (target, target), (128, 128, 128))
+    out.paste(tmp, (pad_x, pad_y))
+    sx = new_w / orig_w
+    sy = new_h / orig_h
+    return out, (sx, sy, pad_x, pad_y)
+
+
+class PartsDataset(Dataset):
+    def __init__(self, ann_path, img_dir, augment=True):
+        self.ann = json.load(open(ann_path, "r", encoding="utf-8"))
         self.img_dir = img_dir
-        self.resize = resize
         self.augment = augment
-        self.transform = AugmentationTransform(resize, augment)
-        
-        self.class_counts = {cls: 0 for cls in CLASSES}
-        self.sample_weights = []
-        self._compute_sample_weights()
-    
-    def _compute_sample_weights(self):
-        """Compute sample weights - prioritize samples with damages."""
-        for ann_item in self.ann:
-            damages = ann_item.get("damages", [])
-            # Much higher weight for damage-containing samples
-            weight = 1.0 + 3.0 * len(damages)  # Was 0.5, now 3.0
-            self.sample_weights.append(weight)
-        
-        total_weight = sum(self.sample_weights)
-        self.sample_weights = [w / total_weight for w in self.sample_weights]
-    
+
     def __len__(self):
         return len(self.ann)
-    
+
     def __getitem__(self, idx):
-        ann = self.ann[idx]
-        img_path = os.path.join(self.img_dir, ann["filename"])
-        
-        try:
-            img = Image.open(img_path).convert("RGB")
-        except Exception as e:
-            logger.error(f"Failed to load image {img_path}: {e}")
-            return self.__getitem__((idx + 1) % len(self.ann))
-        
-        # Transform returns (scale_x, scale_y, pad_x, pad_y)
-        img_tensor, (sx, sy, pad_x, pad_y) = self.transform(img)
-        
+        a = self.ann[idx]
+        img = Image.open(os.path.join(self.img_dir, a["filename"])).convert("RGB")
+
+        if self.augment and random.random() < 0.4:
+            img = TF.adjust_brightness(img, random.uniform(0.85, 1.15))
+        if self.augment and random.random() < 0.4:
+            img = TF.adjust_contrast(img, random.uniform(0.85, 1.15))
+
+        img320, (sx, sy, px, py) = _resize_pad_320(img)
+        img_t = TF.to_tensor(img320)
+        img_t = TF.normalize(img_t, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+
         boxes = []
         labels = []
-        
-        # Process parts
-        for pname, bbox in ann.get("parts", {}).items():
-            if pname not in PARTS:
+        for p, box in a["parts"].items():
+            if p not in PARTS:
                 continue
-            
-            x1, y1, x2, y2 = bbox
-            # Apply scale AND padding offset
-            x1 = x1 * sx + pad_x
-            x2 = x2 * sx + pad_x
-            y1 = y1 * sy + pad_y
-            y2 = y2 * sy + pad_y
-            
-            x1 = max(0, min(x1, self.resize - 1))
-            x2 = max(x1 + 1, min(x2, self.resize))
-            y1 = max(0, min(y1, self.resize - 1))
-            y2 = max(y1 + 1, min(y2, self.resize))
-            
-            if (x2 - x1) > 2 and (y2 - y1) > 2:
-                boxes.append([x1, y1, x2, y2])
-                labels.append(NAME2IDX[pname])
-        
-        # Process damages
-        for dmg in ann.get("damages", []):
-            dtype = dmg.get("type")
-            if dtype not in DAMAGES:
-                continue
-            
-            bbox = dmg.get("bbox", [0, 0, 10, 10])
-            x1, y1, x2, y2 = bbox
-            
-            # Apply scale AND padding offset
-            x1 = x1 * sx + pad_x
-            x2 = x2 * sx + pad_x
-            y1 = y1 * sy + pad_y
-            y2 = y2 * sy + pad_y
-            
-            x1 = max(0, min(x1, self.resize - 1))
-            x2 = max(x1 + 1, min(x2, self.resize))
-            y1 = max(0, min(y1, self.resize - 1))
-            y2 = max(y1 + 1, min(y2, self.resize))
-            
-            if (x2 - x1) > 2 and (y2 - y1) > 2:
-                boxes.append([x1, y1, x2, y2])
-                labels.append(NAME2IDX[dtype])
-        
-        # Ensure we always have at least one box
-        if len(boxes) == 0:
-            boxes.append([0, 0, 2, 2])
-            labels.append(0)
-        
-        targets = {
+            x1, y1, x2, y2 = box
+            x1 = x1 * sx + px
+            x2 = x2 * sx + px
+            y1 = y1 * sy + py
+            y2 = y2 * sy + py
+            x1 = max(0, min(319, x1))
+            x2 = max(x1 + 2, min(320, x2))
+            y1 = max(0, min(319, y1))
+            y2 = max(y1 + 2, min(320, y2))
+            boxes.append([x1, y1, x2, y2])
+            labels.append(PART_NAME2IDX[p])
+
+        target = {
             "boxes": torch.tensor(boxes, dtype=torch.float32),
-            "labels": torch.tensor(labels, dtype=torch.int64)
+            "labels": torch.tensor(labels, dtype=torch.int64),
         }
-        
-        return img_tensor, targets
+        return img_t, target
 
 
-# =============================================================================
-# COLLATE FUNCTION
-# =============================================================================
-def collate_fn(batch):
-    """Collate function for DataLoader."""
-    images, targets = zip(*batch)
-    return list(images), list(targets)
+def collate(batch):
+    imgs, tgts = zip(*batch)
+    return list(imgs), list(tgts)
 
 
-# =============================================================================
-# WEIGHTED LOSS WRAPPER
-# =============================================================================
-class WeightedLossModel(nn.Module):
-    """Wrapper to apply class weights to SSD loss function.
-    
-    SSD loss consists of:
-    - classification_loss: Cross-entropy for class prediction
-    - bbox_regression_loss: Smooth L1 for bounding box regression
-    
-    We apply class weights to the classification loss component.
-    """
-    
-    def __init__(self, model: nn.Module, class_weights: torch.Tensor):
-        super().__init__()
-        self.model = model
-        self.class_weights = class_weights
-        # Normalize weights to prevent explosion
-        self.class_weights = class_weights / class_weights.mean()
-    
-    def forward(self, images, targets=None):
-        if self.training and targets is not None:
-            # Get loss dict from model
-            loss_dict = self.model(images, targets)
-            
-            # Apply class weights to classification loss
-            # SSD typically returns: 'classification', 'bbox_regression', 'loss'
-            weighted_loss_dict = {}
-            total_weighted_loss = 0.0
-            
-            for key, value in loss_dict.items():
-                if key == 'classification':
-                    # Classification loss gets weighted by class importance
-                    # Damage classes (higher weights) will contribute more to loss
-                    weight_factor = self.class_weights.max() / self.class_weights.min()
-                    weighted_value = value * (1.0 + 0.5 * (weight_factor - 1.0))  # Moderate weighting
-                    weighted_loss_dict[key] = weighted_value
-                    total_weighted_loss += weighted_value
-                elif key == 'loss':
-                    # Skip the total loss, we'll recompute it
+def _compute_ap_voc(recalls, precisions):
+    """VOC-style AP: 11-point interpolation (average max precision at 0,0.1,...,1)."""
+    if not recalls or not precisions or sum(recalls) == 0:
+        return 0.0
+    ap = 0.0
+    for t in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+        p_at_t = 0.0
+        for r, p in zip(recalls, precisions):
+            if r >= t:
+                p_at_t = max(p_at_t, p)
+        ap += p_at_t / 11.0
+    return ap
+
+
+def compute_map50(model, val_dl, device, score_thresh=0.25, iou_thresh=0.5, num_classes=9):
+    """Compute mAP@0.5 on validation set (background = 0)."""
+    model.eval()
+    # Per-class: list of (confidence, is_tp)
+    class_scores_tp = [[] for _ in range(num_classes)]
+    class_num_gt = [0] * num_classes
+
+    with torch.no_grad():
+        for imgs, tgts in val_dl:
+            imgs = [i.to(device) for i in imgs]
+            preds = model(imgs)
+
+            for pred, tgt in zip(preds, tgts):
+                gt_boxes = tgt["boxes"].to(device)
+                gt_labels = tgt["labels"].to(device)
+                keep = pred["scores"] >= score_thresh
+                p_boxes = pred["boxes"][keep].to(device)
+                p_scores = pred["scores"][keep]
+                p_labels = pred["labels"][keep]
+                for c in range(1, num_classes):
+                    n_gt = (gt_labels == c).sum().item()
+                    class_num_gt[c] += n_gt
+                    pred_c = (p_labels == c).nonzero(as_tuple=True)[0]
+                    if len(pred_c) == 0:
+                        continue
+                    pb = p_boxes[pred_c]
+                    ps = p_scores[pred_c]
+                    gb = gt_boxes[gt_labels == c]
+                    if gb.numel() == 0:
+                        for s in ps.tolist():
+                            class_scores_tp[c].append((s, False))
+                        continue
+                    ious = box_iou(pb, gb)
+                    used_gt = set()
+                    for ord_idx in torch.argsort(ps, descending=True):
+                        row = ious[ord_idx]
+                        best_gt = row.argmax().item()
+                        iou_val = row[best_gt].item()
+                        tp = iou_val >= iou_thresh and best_gt not in used_gt
+                        if tp:
+                            used_gt.add(best_gt)
+                        class_scores_tp[c].append((ps[ord_idx].item(), tp))
+    aps = []
+    for c in range(1, num_classes):
+        if class_num_gt[c] == 0:
+            continue
+        lst = class_scores_tp[c]
+        if not lst:
+            aps.append(0.0)
+            continue
+        lst.sort(key=lambda x: -x[0])
+        tp_cum = 0
+        fp_cum = 0
+        precisions = []
+        recalls = []
+        for _, is_tp in lst:
+            if is_tp:
+                tp_cum += 1
+            else:
+                fp_cum += 1
+            precisions.append(tp_cum / max(1, tp_cum + fp_cum))
+            recalls.append(tp_cum / max(1, class_num_gt[c]))
+        ap = _compute_ap_voc(recalls, precisions)
+        aps.append(ap)
+    return sum(aps) / max(1, len(aps))
+
+
+class DamageCropDataset(Dataset):
+    """Uses ground-truth part boxes to generate crops and classify damage type per part."""
+
+    def __init__(self, ann_path, img_dir, augment=True):
+        self.ann = json.load(open(ann_path, "r", encoding="utf-8"))
+        self.img_dir = img_dir
+        self.augment = augment
+        self.tf = T.Compose([
+            T.Resize((224, 224)),
+            T.ToTensor(),
+            T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        self.samples = []
+        for a in self.ann:
+            pd = a.get("part_damage", {})
+            for p in PARTS:
+                if p not in a["parts"]:
                     continue
-                else:
-                    # Other losses (bbox regression) keep original weight
-                    weighted_loss_dict[key] = value
-                    total_weighted_loss += value
-            
-            # Recompute total loss
-            weighted_loss_dict['loss'] = total_weighted_loss
-            return weighted_loss_dict
-        else:
-            return self.model(images, targets)
-    
-    def __getattr__(self, name):
-        # Forward other attributes to wrapped model
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.model, name)
+                dmg = pd.get(p, "none")
+                self.samples.append((a["filename"], p, a["parts"][p], dmg))
 
-# =============================================================================
-# MODEL BUILDING
-# =============================================================================
-def build_model(num_classes: int, use_pretrained: bool = True) -> nn.Module:
-    """Build SSD-MobileNet model optimized for damage detection.
-    
-    CRITICAL: When using pretrained=True with a different num_classes,
-    torchvision's SSD automatically replaces the classification head.
-    We DON'T load pretrained weights directly - we load the backbone pretrained
-    and let the head initialize randomly for our custom classes.
-    """
-    # IMPORTANT: For transfer learning with custom classes:
-    # 1. Load model WITHOUT pretrained weights first (random init)
-    # 2. This gives us the correct architecture for our num_classes
-    # 3. The backbone (MobileNetV3) benefits from ImageNet pretraining
-    #    which is already baked into torchvision's implementation
-    
-    if use_pretrained:
-        try:
-            from torchvision.models.detection import SSDLite320_MobileNet_V3_Large_Weights
-            # Load with pretrained weights - torchvision handles head replacement
-            model = ssdlite320_mobilenet_v3_large(
-                weights=SSDLite320_MobileNet_V3_Large_Weights.DEFAULT
-            )
-            
-            # Replace the classification head for our custom number of classes
-            # SSD head structure: head.classification_head
-            in_channels = model.head.classification_head.module_list[-1].in_channels
-            num_anchors = model.head.classification_head.num_columns
-            
-            # Replace classification head with correct num_classes
-            model.head.classification_head = nn.Sequential(
-                *list(model.head.classification_head.module_list[:-1]),
-                nn.Conv2d(in_channels, num_classes * num_anchors, kernel_size=1)
-            )
-            
-            logger.info(f"✓ Loaded pretrained backbone, replaced head for {num_classes} classes")
-        except Exception as e:
-            logger.warning(f"Could not modify pretrained model: {e}")
-            logger.warning("Falling back to random initialization")
-            model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
-    else:
-        model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
-        logger.info(f"✓ Initialized model with random weights for {num_classes} classes")
-    
-    return model
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        fname, p, box, dmg = self.samples[idx]
+        img = Image.open(os.path.join(self.img_dir, fname)).convert("RGB")
+        x1, y1, x2, y2 = box
+        crop = img.crop((x1, y1, x2, y2))
+
+        if self.augment and random.random() < 0.4:
+            crop = TF.adjust_brightness(crop, random.uniform(0.85, 1.15))
+        if self.augment and random.random() < 0.4:
+            crop = TF.adjust_contrast(crop, random.uniform(0.85, 1.15))
+        if self.augment and random.random() < 0.2:
+            crop = crop.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.2, 0.8)))
+
+        x = self.tf(crop)
+        y = torch.tensor(DMG_NAME2IDX[dmg], dtype=torch.long)
+        return x, y
 
 
-# =============================================================================
-# SAFE LOSS EXTRACTION
-# =============================================================================
-def extract_loss_value(loss_dict, device):
-    """
-    #2: Safely extract loss value from model output.
-    Handles edge cases that caused val_loss=0.0 bug.
-    """
-    if loss_dict is None:
-        return torch.tensor(0.0, device=device)
-    
-    if isinstance(loss_dict, torch.Tensor):
-        return loss_dict
-    
-    if isinstance(loss_dict, dict):
-        losses = []
-        for key, value in loss_dict.items():
-            if isinstance(value, torch.Tensor) and value.numel() > 0:
-                losses.append(value)
-        
-        if len(losses) > 0:
-            return sum(losses)
-        else:
-            logger.warning("Loss dict had no valid tensors!")
-            return torch.tensor(0.0, device=device)
-    
-    logger.warning(f"Unexpected loss type: {type(loss_dict)}")
-    return torch.tensor(0.0, device=device)
+def train_parts_detector(train_ann, val_ann, img_dir, out_path, epochs=60, batch=16, lr=1e-4, device="cuda"):
+    device = torch.device(device if torch.cuda.is_available() else "cpu")
+    train_ds = PartsDataset(train_ann, img_dir, augment=True)
+    val_ds = PartsDataset(val_ann, img_dir, augment=False)
+    train_dl = DataLoader(train_ds, batch_size=batch, shuffle=True, collate_fn=collate, num_workers=2, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size=batch, shuffle=False, collate_fn=collate, num_workers=2, pin_memory=True)
 
-
-# =============================================================================
-# TRAINING LOOP
-# =============================================================================
-def train_detector(
-    ann_path: str,
-    img_dir: str,
-    out_path: str = "./models/damage_detection/mobilenet_ssd.pth",
-    resize: int = 320,
-    batch_size: int = 16,
-    epochs: int = 100,
-    lr: float = 1e-4,  # Lowered from 1e-3
-    weight_decay: float = 5e-4,
-    patience: int = 15,  # Increased from 5
-    log_dir: str = "./outputs"
-):
-    """
-    training with proper validation loss and better damage detection.
-    """
-    
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    
-    logger.info("=" * 80)
-    logger.info("Loading DAMAGE DETECTION TRAINING")
-    logger.info("=" * 80)
-    logger.info(f"Model: SSD-MobileNet v3-Large")
-    logger.info(f"Classes: {len(CLASSES)} ({len(PARTS)} parts + {len(DAMAGES)} damage types)")
-    logger.info(f"Input size: {resize}x{resize}")
-    logger.info(f"Batch size: {batch_size}, Learning rate: {lr}, Epochs: {epochs}")
-    logger.info(f"Damage class weights: 10-12x (was 2-2.5x)")
-    logger.info("=" * 80)
-    
-    # Load dataset
-    logger.info("Loading dataset...")
-    full_dataset = EnhancedChairDataset(ann_path, img_dir, resize, augment=True)
-    logger.info(f"Total samples: {len(full_dataset)}")
-    
-    # Stratified split to ensure damage types are represented
-    from sklearn.model_selection import StratifiedShuffleSplit
-    damage_counts = [sum(1 for d in item.get('damages', [])) for item in full_dataset.ann]
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    indices = list(range(len(full_dataset)))
-    for train_idx, val_idx in sss.split(indices, damage_counts):
-        train_set = torch.utils.data.Subset(full_dataset, train_idx)
-        val_set = torch.utils.data.Subset(full_dataset, val_idx)
-    n_train, n_val = len(train_set), len(val_set)
-    logger.info(f"Train: {n_train}, Val: {n_val}")
-    
-    # Create weighted sampler
-    train_weights = [full_dataset.sample_weights[i] for i in train_set.indices]
-    sampler = WeightedRandomSampler(train_weights, len(train_weights), replacement=True)
-    
-    # GPU optimization: pin_memory only if CUDA available
-    use_pin_memory = torch.cuda.is_available()
-    
-    train_loader = DataLoader(
-        train_set, batch_size=batch_size, sampler=sampler,
-        collate_fn=collate_fn, num_workers=0, pin_memory=use_pin_memory,
-        drop_last=True
-    )
-    val_loader = DataLoader(
-        val_set, batch_size=batch_size, shuffle=False,
-        collate_fn=collate_fn, num_workers=0, pin_memory=use_pin_memory,
-        drop_last=True
-    )
-    
-    # Setup device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-    if torch.cuda.is_available():
-        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-        logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
-    else:
-        logger.info("Running on CPU - training will be slower")
-    
-    # Build model with pretrained weights
-    model = build_model(len(CLASSES), use_pretrained=True)
-    model.to(device)
-    
-    # Apply class weights to loss function
-    # Convert CLASS_WEIGHTS to tensor for loss weighting
-    class_weight_tensor = torch.ones(len(CLASSES), device=device)
-    for cls_name, weight in CLASS_WEIGHTS.items():
-        if cls_name in NAME2IDX:
-            class_weight_tensor[NAME2IDX[cls_name]] = weight
-    
-    logger.info(f"Class weights applied: {dict(zip(CLASSES, class_weight_tensor.cpu().tolist()))}")
-    
-    # Wrap model to apply class weights to loss
-    model = WeightedLossModel(model, class_weight_tensor)
-    
-    # GPU memory optimization
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.backends.cudnn.benchmark = True  # Optimize for consistent input sizes
-    
-    # Optimizer
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    
-    # Learning rate scheduler
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-6)
-    
-    # Training history
-    history = {
-        "train_loss": [],
-        "val_loss": [],
-        "val_part_detections": [],
-        "val_damage_detections": [],
-        "best_val_loss": float('inf'),
-        "best_epoch": 0,
-        "patience_counter": 0
-    }
-    
-    # Training loop
-    scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
-    for epoch in range(1, epochs + 1):
-        # =====================================================================
-        # TRAIN PHASE
-        # =====================================================================
-        model.train()
-        train_loss = 0.0
-        train_steps = 0
-        pbar = tqdm(train_loader, desc=f"[Epoch {epoch}/{epochs}] Train", leave=False)
-        for imgs, tgts in pbar:
-            imgs = [img.to(device) for img in imgs]
-            tgts = [{k: v.to(device) for k, v in tgt.items()} for tgt in tgts]
-            optimizer.zero_grad()
-            if scaler:
-                with torch.cuda.amp.autocast():
-                    loss_dict = model(imgs, tgts)
-                    loss = extract_loss_value(loss_dict, device)
-                scaler.scale(loss).backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss_dict = model(imgs, tgts)
-                loss = extract_loss_value(loss_dict, device)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-            train_loss += loss.item()
-            train_steps += 1
-            pbar.set_postfix({"loss": f"{train_loss / train_steps:.4f}"})
-        avg_train_loss = train_loss / max(1, train_steps)
-        history["train_loss"].append(avg_train_loss)
-        
-        # =====================================================================
-        # VALIDATION PHASE
-        # =====================================================================
-        model.train()  # Keep in train mode for loss calculation
-        val_loss = 0.0
-        val_steps = 0
-        
-        pbar = tqdm(val_loader, desc=f"[Epoch {epoch}/{epochs}] Val Loss", leave=False)
-        with torch.no_grad():
-            for imgs, tgts in pbar:
-                imgs = [img.to(device) for img in imgs]
-                tgts = [{k: v.to(device) for k, v in tgt.items()} for tgt in tgts]
-                
-                loss_dict = model(imgs, tgts)
-                loss = extract_loss_value(loss_dict, device)  # Safe extraction
-                
-                val_loss += loss.item()
-                val_steps += 1
-                pbar.set_postfix({"loss": f"{val_loss / val_steps:.4f}"})
-        
-        # Now switch to eval mode for detection counting
-        model.eval()
-        part_det_count = 0
-        damage_det_count = 0
-        
-        pbar = tqdm(val_loader, desc=f"[Epoch {epoch}/{epochs}] Val Detect", leave=False)
-        with torch.no_grad():
-            for imgs, _ in pbar:
-                imgs = [img.to(device) for img in imgs]
-                outs = model(imgs)
-                
-                for out in outs:
-                    if len(out["boxes"]) > 0:
-                        keep = ops.nms(out["boxes"], out["scores"], iou_threshold=0.3)
-                        for idx in keep:
-                            label = int(out["labels"][idx])
-                            class_name = CLASSES[label]
-                            if class_name in PARTS:
-                                part_det_count += 1
-                            elif class_name in DAMAGES:
-                                damage_det_count += 1
-        
-        avg_val_loss = val_loss / max(1, val_steps)
-        avg_part_dets = part_det_count / len(val_set)
-        avg_damage_dets = damage_det_count / len(val_set)
-        
-        history["val_loss"].append(avg_val_loss)
-        history["val_part_detections"].append(avg_part_dets)
-        history["val_damage_detections"].append(avg_damage_dets)
-        
-        # Logging
-        logger.info(
-            f"Epoch {epoch:3d} | "
-            f"Train Loss: {avg_train_loss:.4f} | "
-            f"Val Loss: {avg_val_loss:.4f} | "
-            f"Parts/img: {avg_part_dets:.2f} | "
-            f"Damages/img: {avg_damage_dets:.2f} | "
-            f"LR: {optimizer.param_groups[0]['lr']:.2e}"
-        )
-        
-        # Learning rate scheduling
-        scheduler.step()
-        
-        # GPU memory cleanup every 10 epochs
-        if torch.cuda.is_available() and epoch % 10 == 0:
-            torch.cuda.empty_cache()
-        
-        # Early stopping logic
-        if avg_val_loss < history["best_val_loss"]:
-            history["best_val_loss"] = avg_val_loss
-            history["best_epoch"] = epoch
-            history["patience_counter"] = 0
-            # Save model with metadata
-            # Extract actual model state dict (unwrap WeightedLossModel)
-            if hasattr(model, 'model'):
-                # Model is wrapped in WeightedLossModel, extract inner model
-                actual_model_state = model.model.state_dict()
-            else:
-                # Model is not wrapped
-                actual_model_state = model.state_dict()
-            
-            #Handle directory path - append filename if path is a directory
-            save_path = out_path
-            if os.path.isdir(save_path) or save_path.endswith(os.sep) or save_path.endswith('/'):
-                # If it's a directory, append the default filename
-                save_path = os.path.join(save_path, 'mobilenet_ssd.pth')
-                # Ensure directory exists
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            
-            save_dict = {
-                "model_state": actual_model_state,  # Save unwrapped model state
-                "epoch": epoch,
-                "val_loss": avg_val_loss,
-                "val_damage_detections": avg_damage_dets,
-                "val_part_detections": avg_part_dets,
-                "optimizer_state": optimizer.state_dict(),
-                "scheduler_state": scheduler.state_dict(),
-                "history": history
-            }
-            torch.save(save_dict, save_path)
-            logger.info(f"✓ Best model saved (loss: {avg_val_loss:.4f}, damages: {avg_damage_dets:.2f}/img)")
-        else:
-            history["patience_counter"] += 1
-            if history["patience_counter"] >= patience:
-                logger.info(f"Early stopping triggered after {epoch} epochs")
-                break
-    
-    # Save training history
-    history_path = os.path.join(log_dir, "training_logs.json")
-    with open(history_path, "w") as f:
-        json.dump(history, f, indent=2)
-    logger.info(f"Training logs saved to {history_path}")
-    
-    # Plot training curves
-    plot_path = os.path.join(log_dir, "training_curve.png")
+    # Pretrained backbone (ImageNet); new head for 9 classes (background + 8 parts)
     try:
-        plt.figure(figsize=(15, 5))
-        
-        plt.subplot(1, 3, 1)
-        plt.plot(history["train_loss"], label="Train Loss", marker='o')
-        plt.plot(history["val_loss"], label="Val Loss", marker='s')
-        plt.axvline(history["best_epoch"]-1, color='r', linestyle='--', 
-                    label=f"Best Epoch {history['best_epoch']}")
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.title("Training & Validation Loss")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        plt.subplot(1, 3, 2)
-        plt.plot(history["val_part_detections"], label="Parts", marker='o', color='blue')
-        plt.xlabel("Epoch")
-        plt.ylabel("Detections/Image")
-        plt.title("Validation Part Detections")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        plt.subplot(1, 3, 3)
-        plt.plot(history["val_damage_detections"], label="Damages", marker='o', color='red')
-        plt.xlabel("Epoch")
-        plt.ylabel("Detections/Image")
-        plt.title("Validation Damage Detections")
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
+        model = ssdlite320_mobilenet_v3_large(
+            weights=None,
+            weights_backbone=MobileNet_V3_Large_Weights.IMAGENET1K_V1,
+            num_classes=len(PART_CLASSES),
+        )
+    except TypeError:
+        model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=len(PART_CLASSES))
+    model.to(device)
+
+    opt = optim.AdamW(model.parameters(), lr=lr, weight_decay=5e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs, eta_min=lr * 0.01)
+    use_amp = device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    best_map = 0.0
+    history = {"train_loss": [], "val_loss": [], "mAP50": []}
+    for ep in range(1, epochs + 1):
+        model.train()
+        tl = 0.0
+        for imgs, tgts in train_dl:
+            imgs = [i.to(device) for i in imgs]
+            tgts = [{k: v.to(device) for k, v in t.items()} for t in tgts]
+            opt.zero_grad()
+            with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
+                loss_dict = model(imgs, tgts)
+                loss = sum(loss_dict.values())
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+            tl += float(loss.item())
+        tl /= max(1, len(train_dl))
+        scheduler.step()
+
+        model.train()
+        vl = 0.0
+        with torch.no_grad():
+            for imgs, tgts in val_dl:
+                imgs = [i.to(device) for i in imgs]
+                tgts = [{k: v.to(device) for k, v in t.items()} for t in tgts]
+                loss_dict = model(imgs, tgts)
+                loss = sum(loss_dict.values())
+                vl += float(loss.item())
+        vl /= max(1, len(val_dl))
+
+        mAP50 = compute_map50(model, val_dl, device, num_classes=len(PART_CLASSES))
+        history["train_loss"].append(tl)
+        history["val_loss"].append(vl)
+        history["mAP50"].append(mAP50)
+        print(f"[PART DET] ep={ep} train_loss={tl:.3f} val_loss={vl:.3f} mAP@0.5={mAP50:.3f}")
+
+        if mAP50 > best_map:
+            best_map = mAP50
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            torch.save({"model_state": model.state_dict(), "classes": PART_CLASSES}, out_path)
+            print(f"[SAVE] {out_path} (mAP@0.5={mAP50:.3f})")
+
+    # Training curves
+    out_dir = os.path.dirname(out_path)
+    if out_dir and history["train_loss"]:
+        fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+        ep_x = list(range(1, len(history["train_loss"]) + 1))
+        axes[0].plot(ep_x, history["train_loss"], label="Train loss", color="C0")
+        axes[0].set_title("Parts detector – Train loss")
+        axes[0].set_xlabel("Epoch")
+        axes[0].legend()
+        axes[1].plot(ep_x, history["val_loss"], label="Val loss", color="C1")
+        axes[1].set_title("Parts detector – Val loss")
+        axes[1].set_xlabel("Epoch")
+        axes[1].legend()
+        axes[2].plot(ep_x, history["mAP50"], label="mAP@0.5", color="C2")
+        axes[2].set_title("Parts detector – mAP@0.5")
+        axes[2].set_xlabel("Epoch")
+        axes[2].legend()
         plt.tight_layout()
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        graph_path = os.path.join(out_dir, "parts_training_graph.png")
+        plt.savefig(graph_path, dpi=100, bbox_inches="tight")
         plt.close()
-        logger.info(f"Training curve saved to {plot_path}")
-    except Exception as e:
-        logger.warning(f"Could not save training plot: {e}")
-    
-    # Determine final save path
-    final_save_path = out_path
-    if os.path.isdir(out_path) or out_path.endswith(os.sep) or out_path.endswith('/'):
-        final_save_path = os.path.join(out_path, 'mobilenet_ssd.pth')
-    
-    logger.info("=" * 80)
-    logger.info(f"Training completed! Best model at epoch {history['best_epoch']}")
-    logger.info(f"Best validation loss: {history['best_val_loss']:.4f}")
-    logger.info(f"Final damage detections: {history['val_damage_detections'][-1]:.2f}/img")
-    logger.info(f"Model saved to: {final_save_path}")
-    logger.info("=" * 80)
+        print(f"[GRAPH] Saved {graph_path}")
 
 
-# =============================================================================
-# MAIN
-# =============================================================================
+def train_damage_classifier(train_ann, val_ann, img_dir, out_path, epochs=25, batch=64, lr=3e-4, device="cuda"):
+    device = torch.device(device if torch.cuda.is_available() else "cpu")
+    train_ds = DamageCropDataset(train_ann, img_dir, augment=True)
+    val_ds = DamageCropDataset(val_ann, img_dir, augment=False)
+    train_dl = DataLoader(train_ds, batch_size=batch, shuffle=True, num_workers=2, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size=batch, shuffle=False, num_workers=2, pin_memory=True)
+
+    # Class distribution and optional weighting
+    class_counts = [0] * len(DAMAGE_TYPES)
+    for _, _, _, dmg in train_ds.samples:
+        class_counts[DMG_NAME2IDX[dmg]] += 1
+    print("[DMG CLS] Train class counts:", dict(zip(DAMAGE_TYPES, class_counts)))
+    total = sum(class_counts)
+    class_weights = None
+    nonzero = [c for c in class_counts if c > 0]
+    if nonzero and total > 0 and max(nonzero) / max(1, min(nonzero)) > 2:
+        class_weights = torch.tensor(
+            [total / (len(DAMAGE_TYPES) * max(1, c)) for c in class_counts],
+            dtype=torch.float32,
+            device=device,
+        )
+        class_weights = class_weights / class_weights.mean()
+        print("[DMG CLS] Using class weights (imbalance > 2x):", [f"{w:.2f}" for w in class_weights.tolist()])
+
+    model = resnet18(weights="DEFAULT")
+    model.fc = nn.Linear(model.fc.in_features, len(DAMAGE_TYPES))
+    model.to(device)
+
+    crit = nn.CrossEntropyLoss(weight=class_weights)
+    opt = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    use_amp = device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    best_acc = 0.0
+    history = {"train_loss": [], "val_acc": []}
+    for ep in range(1, epochs + 1):
+        model.train()
+        tl = 0.0
+        for x, y in train_dl:
+            x = x.to(device)
+            y = y.to(device)
+            opt.zero_grad()
+            with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
+                logits = model(x)
+                loss = crit(logits, y)
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+            tl += float(loss.item())
+        tl /= max(1, len(train_dl))
+
+        model.eval()
+        correct = 0
+        total_n = 0
+        cm = [[0] * len(DAMAGE_TYPES) for _ in range(len(DAMAGE_TYPES))]
+        with torch.no_grad():
+            for x, y in val_dl:
+                x = x.to(device)
+                y = y.to(device)
+                logits = model(x)
+                pred = logits.argmax(dim=1)
+                correct += int((pred == y).sum().item())
+                total_n += int(y.numel())
+                for gt, pr in zip(y.tolist(), pred.tolist()):
+                    cm[gt][pr] += 1
+        acc = correct / max(1, total_n)
+        history["train_loss"].append(tl)
+        history["val_acc"].append(acc)
+        print(f"[DMG CLS] ep={ep} train_loss={tl:.3f} val_acc={acc:.3f}")
+
+        if acc > best_acc:
+            best_acc = acc
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            torch.save({"model_state": model.state_dict(), "damage_types": DAMAGE_TYPES}, out_path)
+            print(f"[SAVE] {out_path}")
+
+    # Training curves
+    out_dir = os.path.dirname(out_path)
+    if out_dir and history["train_loss"]:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        ep_x = list(range(1, len(history["train_loss"]) + 1))
+        axes[0].plot(ep_x, history["train_loss"], label="Train loss", color="C0")
+        axes[0].set_title("Damage classifier – Train loss")
+        axes[0].set_xlabel("Epoch")
+        axes[0].legend()
+        axes[1].plot(ep_x, history["val_acc"], label="Val accuracy", color="C1")
+        axes[1].set_title("Damage classifier – Val accuracy")
+        axes[1].set_xlabel("Epoch")
+        axes[1].legend()
+        plt.tight_layout()
+        graph_path = os.path.join(out_dir, "damage_training_graph.png")
+        plt.savefig(graph_path, dpi=100, bbox_inches="tight")
+        plt.close()
+        print(f"[GRAPH] Saved {graph_path}")
+
+    # Confusion matrix (on validation)
+    print("[DMG CLS] Validation confusion matrix (rows=GT, cols=pred):")
+    print("       " + " ".join(f"{t:>8}" for t in DAMAGE_TYPES))
+    for i, name in enumerate(DAMAGE_TYPES):
+        row = " ".join(f"{cm[i][j]:>8}" for j in range(len(DAMAGE_TYPES)))
+        print(f"{name:>6} {row}")
+
+
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description="Loading traning Model")
-    parser.add_argument("--ann", type=str, default="./data/synthetic_damage/annotations.json")
-    parser.add_argument("--img_dir", type=str, default="./data/synthetic_damage/images")
-    parser.add_argument("--batch", type=int, default=16, dest="batch_size")
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--resize", type=int, default=320)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--weight_decay", type=float, default=5e-4)
-    parser.add_argument("--patience", type=int, default=15)
-    parser.add_argument("--out", type=str, default="./models/damage_detection/mobilenet_ssd.pth")
-    parser.add_argument("--log_dir", type=str, default="./outputs")
-    
-    args = parser.parse_args()
-    
-    train_detector(
-        ann_path=args.ann,
-        img_dir=args.img_dir,
-        out_path=args.out,
-        resize=args.resize,
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        patience=args.patience,
-        log_dir=args.log_dir
-    )
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--train_ann", default="./data/synth_v2/annotations_train.json")
+    ap.add_argument("--val_ann", default="./data/synth_v2/annotations_val.json")
+    ap.add_argument("--img_dir", default="./data/synth_v2/images")
+    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--task", choices=["parts", "damage", "all"], default="all")
+    ap.add_argument("--epochs_parts", type=int, default=60)
+    ap.add_argument("--epochs_damage", type=int, default=25)
+    ap.add_argument("--batch_parts", type=int, default=16)
+    ap.add_argument("--batch_damage", type=int, default=64)
+    args = ap.parse_args()
+
+    if args.task in ("parts", "all"):
+        train_parts_detector(
+            args.train_ann, args.val_ann, args.img_dir,
+            out_path="./models/damage_detection/parts_detector_ssd.pth",
+            epochs=args.epochs_parts, batch=args.batch_parts, device=args.device,
+        )
+
+    if args.task in ("damage", "all"):
+        train_damage_classifier(
+            args.train_ann, args.val_ann, args.img_dir,
+            out_path="./models/damage_detection/damage_classifier_resnet18.pth",
+            epochs=args.epochs_damage, batch=args.batch_damage, device=args.device,
+        )
