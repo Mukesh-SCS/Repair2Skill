@@ -13,16 +13,35 @@ import os
 import json
 import threading
 import time
-from sim_connection import connect, reset_camera, keep_window_open, save_screenshot
-from sim_robot import load_robot, move_to_home
-from sim_scene import spawn_simple_chair
-from sim_plan_executor import load_json, execute_step
 try:
-    from stream_server import start_streaming_server, capture_frame
+    from pybullet_sim.sim_connection import connect, reset_camera, keep_window_open, save_screenshot
 except ImportError:
-    start_streaming_server = None
-    capture_frame = None
-    print("[WARN] stream_server not available, using legacy screenshot mode", flush=True)
+    from sim_connection import connect, reset_camera, keep_window_open, save_screenshot
+
+try:
+    from pybullet_sim.sim_robot import load_robot, move_to_home
+except ImportError:
+    from sim_robot import load_robot, move_to_home
+
+try:
+    from pybullet_sim.sim_scene import spawn_simple_chair
+except ImportError:
+    from sim_scene import spawn_simple_chair
+
+try:
+    from pybullet_sim.sim_plan_executor import load_json, execute_step
+except ImportError:
+    from sim_plan_executor import load_json, execute_step
+
+try:
+    from pybullet_sim.stream_server import start_streaming_server, capture_frame
+except ImportError:
+    try:
+        from stream_server import start_streaming_server, capture_frame
+    except ImportError:
+        start_streaming_server = None
+        capture_frame = None
+        print("[WARN] stream_server not available, using legacy screenshot mode", flush=True)
 
 
 def main():
