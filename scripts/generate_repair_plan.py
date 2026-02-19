@@ -25,7 +25,8 @@ from typing import Dict, Any
 # Add the parent directory to sys.path to import utils
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.openai_utils import generate_repair_plan as call_openai_plan
+from utils.repair_planner import build_deterministic_plan
+from utils.repair_schema import normalize_part_name, normalize_damage_type
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -38,36 +39,17 @@ logger.setLevel(logging.INFO)
 
 def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: str) -> Dict[str, Any]:
     """
-    Wrapper around openai_utils.generate_repair_plan().
-    Handles logging and JSON normalization for downstream modules.
+    Return a deterministic repair plan so the sim always gets the correct part and
+    replace steps (inspect → remove → replace for broken/cracked/missing).
     """
-    logger.info(f"Requesting OpenAI repair plan for {furniture_type} - {damaged_part} ({damage_type})")
-
-
-    plan = call_openai_plan(furniture_type, damaged_part, damage_type)
-
-    # Normalize to ensure compatibility with downstream visualization and Webots
-    if "repair_sequence" not in plan and "repair_plan" in plan:
-        plan = {"repair_sequence": plan["repair_plan"]}
-
-    # --- Post-process: Ensure 'replace' step for broken/missing ---
-    if damage_type in ["broken", "missing"]:
-        found_replace = False
-        for step in plan.get("repair_sequence", []):
-            if step.get("action_type", "").lower() == "replace" and step.get("target_part", "") == damaged_part:
-                found_replace = True
-                break
-        if not found_replace:
-            # Add a replace step at the end
-            max_step = max([s.get("step_id", 0) for s in plan.get("repair_sequence", [])] or [1])
-            plan["repair_sequence"].append({
-                "step_id": max_step + 1,
-                "action_type": "replace",
-                "target_part": damaged_part,
-                "description": f"Install new {damaged_part}.",
-                "tools": ["screwdriver"]
-            })
-
+    logger.info(f"Generating repair plan for {furniture_type} - {damaged_part} ({damage_type})")
+    try:
+        part = normalize_part_name(damaged_part.strip())
+    except ValueError:
+        part = "back_left_leg"
+    damage = normalize_damage_type(damage_type.strip())
+    plan = build_deterministic_plan(part, damage)
+    logger.info(f"Plan: {len(plan.get('repair_sequence', []))} steps for target_part={part}")
     return plan
 
 

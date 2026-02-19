@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 .env
 data/*
+data/synth_v2/*
 outputs/*
 models/*
 .venv/

@@ -1,309 +1,220 @@
-import torch
+"""
+Chair damage detection: parts detector (SSDLite) + damage classifier (ResNet18).
+Detects parts → crops each part → classifies damage per part.
+Returns parts, best_damage, and detected_pairs (for pipeline compatibility).
+"""
+
 import json
-import sys
+import os
+
+import torch
+import torch.nn as nn
 from PIL import Image
-import numpy as np
+import torchvision.transforms.functional as TF
+import torchvision.transforms as T
 from torchvision.models.detection.ssdlite import ssdlite320_mobilenet_v3_large
-from torchvision import transforms, ops
+from torchvision.models import resnet18
+from torchvision.ops import nms
 
 PARTS = [
-    "seat", "back", "front_left_leg", "front_right_leg",
-    "back_left_leg", "back_right_leg", "armrest_left", "armrest_right"
+    "seat", "back",
+    "front_left_leg", "front_right_leg",
+    "back_left_leg", "back_right_leg",
+    "armrest_left", "armrest_right",
 ]
-
-DAMAGES = ["missing", "cracked", "broken", "loose", "scratched"]
-
-CLASSES = ["__background__"] + PARTS + DAMAGES
+PART_CLASSES = ["__background__"] + PARTS
+DAMAGE_TYPES = ["none", "missing", "cracked", "broken", "loose", "scratched"]
 
 
-def build_model_for_inference(weights_path, device):
-    """Build model matching the training architecture and load weights."""
-    num_classes = len(CLASSES)
-    
-    # Build model with the same architecture as training (no pretrained weights)
-    model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=num_classes)
-    
-    # Load the trained weights
-    state = torch.load(weights_path, map_location=device)
-    
-    # Check if state dict is from WeightedLossModel wrapper
-    if isinstance(state, dict):
-        # If it's a checkpoint dict with 'model_state' key
-        if 'model_state' in state:
-            state_dict = state['model_state']
-        else:
-            state_dict = state
-        
-        # Remove 'model.' prefix if present (from WeightedLossModel wrapper)
-        if any(k.startswith('model.') for k in state_dict.keys()):
-            state_dict = {k.replace('model.', ''): v for k, v in state_dict.items() if k.startswith('model.')}
-    else:
-        state_dict = state
-    
+def _resize_pad_320(img: Image.Image):
+    orig_w, orig_h = img.size
+    target = 320
+    tmp = img.copy()
+    tmp.thumbnail((target, target), Image.Resampling.LANCZOS)
+    new_w, new_h = tmp.size
+    pad_x = (target - new_w) // 2
+    pad_y = (target - new_h) // 2
+    out = Image.new("RGB", (target, target), (128, 128, 128))
+    out.paste(tmp, (pad_x, pad_y))
+    sx = new_w / orig_w
+    sy = new_h / orig_h
+    return out, (sx, sy, pad_x, pad_y)
+
+
+def _load_ckpt(path, device):
     try:
-        # Try strict loading first
-        model.load_state_dict(state_dict, strict=True)
-    except RuntimeError as e:
-        # If strict loading fails, try with strict=False and handle mismatches
-        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-        
-        if missing_keys:
-            print(f"[WARNING] Missing keys in checkpoint: {len(missing_keys)}", file=sys.stderr)
-        if unexpected_keys:
-            print(f"[WARNING] Unexpected keys in checkpoint: {len(unexpected_keys)}", file=sys.stderr)
-    
-    model.to(device)
-    model.eval()
+        return torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=device)
+
+
+def load_parts_detector(weights_path, device):
+    ckpt = _load_ckpt(weights_path, device)
+    model = ssdlite320_mobilenet_v3_large(weights=None, num_classes=len(PART_CLASSES))
+    model.load_state_dict(ckpt["model_state"], strict=True)
+    model.to(device).eval()
     return model
 
 
-def detect(image_path, weights="./models/damage_detection/mobilenet_ssd.pth",
-           threshold=0.15, debug=False):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = build_model_for_inference(weights, device)
+def load_damage_classifier(weights_path, device):
+    ckpt = _load_ckpt(weights_path, device)
+    model = resnet18(weights=None)
+    model.fc = nn.Linear(model.fc.in_features, len(DAMAGE_TYPES))
+    model.load_state_dict(ckpt["model_state"], strict=True)
+    model.to(device).eval()
+    return model
 
-    # CRITICAL: Preprocessing must EXACTLY match training!
-    # Training uses: resize with aspect ratio + center padding + normalize
-    # We must do the same here for consistent predictions
-    
+
+_damage_tf = T.Compose([
+    T.Resize((224, 224)),
+    T.ToTensor(),
+    T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+])
+
+# Load-once cache for server/repeated inference (key = (parts_path, damage_path))
+_cached_models = {}
+_cached_device = None
+
+
+def get_models(parts_weights, damage_weights, device, force_reload=False):
+    """Load parts detector and damage classifier once; reuse for subsequent calls."""
+    global _cached_models, _cached_device
+    key = (os.path.abspath(parts_weights), os.path.abspath(damage_weights))
+    if force_reload or key not in _cached_models or _cached_device != device:
+        _cached_models[key] = (
+            load_parts_detector(parts_weights, device),
+            load_damage_classifier(damage_weights, device),
+        )
+        _cached_device = device
+    return _cached_models[key]
+
+
+def detect_damage(
+    image_path,
+    parts_weights="./models/damage_detection/parts_detector_ssd.pth",
+    damage_weights="./models/damage_detection/damage_classifier_resnet18.pth",
+    part_thresh=0.35,
+    max_parts=8,
+    force_reload=False,
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    parts_model, dmg_model = get_models(parts_weights, damage_weights, device, force_reload=force_reload)
+
     img = Image.open(image_path).convert("RGB")
     orig_w, orig_h = img.size
-    target_size = 320
-    
-    # Step 1: Resize maintaining aspect ratio (same as training)
-    img_resized = img.copy()
-    img_resized.thumbnail((target_size, target_size), Image.Resampling.LANCZOS)
-    new_w, new_h = img_resized.size
-    
-    # Step 2: Pad to square with gray background (same as training)
-    img_padded = Image.new('RGB', (target_size, target_size), (128, 128, 128))
-    paste_x = (target_size - new_w) // 2
-    paste_y = (target_size - new_h) // 2
-    img_padded.paste(img_resized, (paste_x, paste_y))
-    
-    # Calculate inverse transform for bbox mapping back to original coords
-    scale_x = new_w / orig_w
-    scale_y = new_h / orig_h
-    
-    # Step 3: Convert to tensor and normalize (same as training)
-    tf = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-    ])
-    
-    img_t = tf(img_padded).to(device)
 
+    img320, (sx, sy, px, py) = _resize_pad_320(img)
+    x = TF.to_tensor(img320)
+    x = TF.normalize(x, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]).to(device)
+    # Torchvision detection models expect a list of tensors (one per image), not a batched tensor
     with torch.no_grad():
-        out = model([img_t])[0]
+        out = parts_model([x])[0]
 
-    # NMS: more forgiving threshold to keep nearby boxes
-    keep_indices = ops.nms(out["boxes"], out["scores"], 0.5)
+    boxes = out["boxes"].detach().cpu()
+    scores = out["scores"].detach().cpu()
+    labels = out["labels"].detach().cpu()
 
-    boxes = out["boxes"][keep_indices].detach().cpu().numpy()
-    scores = out["scores"][keep_indices].detach().cpu().numpy()
-    labels = out["labels"][keep_indices].detach().cpu().numpy()
-    
-    # Transform boxes back to original image coordinates
-    # Reverse: subtract padding, then divide by scale
-    boxes_orig = []
-    for box in boxes:
-        x1, y1, x2, y2 = box
-        # Remove padding offset
-        x1 = (x1 - paste_x) / scale_x
-        y1 = (y1 - paste_y) / scale_y
-        x2 = (x2 - paste_x) / scale_x
-        y2 = (y2 - paste_y) / scale_y
-        # Clamp to original image bounds
-        x1 = max(0, min(orig_w, x1))
-        x2 = max(0, min(orig_w, x2))
-        y1 = max(0, min(orig_h, y1))
-        y2 = max(0, min(orig_h, y2))
-        boxes_orig.append([x1, y1, x2, y2])
-    
-    boxes = np.array(boxes_orig) if boxes_orig else boxes
+    keep = scores >= part_thresh
+    boxes = boxes[keep]
+    scores = scores[keep]
+    labels = labels[keep]
+
+    if boxes.numel() == 0:
+        return {
+            "image_path": image_path,
+            "parts": [],
+            "best_damage": None,
+            "detected_pairs": [],
+        }
+
+    keep_idx = nms(boxes, scores, iou_threshold=0.4)
+    boxes = boxes[keep_idx]
+    scores = scores[keep_idx]
+    labels = labels[keep_idx]
 
     parts = []
-    damages = []
+    n_keep = min(max_parts, len(boxes))
+    for i in range(n_keep):
+        b = boxes[i]
+        s = scores[i]
+        l = labels[i]
+        cls = PART_CLASSES[int(l)]
+        x1, y1, x2, y2 = b.numpy().tolist()
+        x1 = (x1 - px) / sx
+        x2 = (x2 - px) / sx
+        y1 = (y1 - py) / sy
+        y2 = (y2 - py) / sy
+        x1 = float(max(0, min(orig_w, x1)))
+        x2 = float(max(0, min(orig_w, x2)))
+        y1 = float(max(0, min(orig_h, y1)))
+        y2 = float(max(0, min(orig_h, y2)))
 
-    # Use separate thresholds for parts and damages
-    # Lower minimum thresholds to allow more detections, especially for undertrained models
-    part_threshold = max(0.05, float(threshold))  # Lowered from 0.10 to allow more detections
-    damage_threshold = max(0.03, float(threshold) * 0.6)  # Lowered from 0.08, now 60% of part threshold
+        crop = img.crop((x1, y1, x2, y2))
+        cx = _damage_tf(crop).unsqueeze(0).to(device)
 
-    for box, score, label in zip(boxes, scores, labels):
-        cls_name = CLASSES[int(label)]
-        
-        if cls_name in PARTS:
-            if score >= part_threshold:
-                parts.append((cls_name, box, float(score)))
-        elif cls_name in DAMAGES:
-            if score >= damage_threshold:
-                damages.append((cls_name, box, float(score)))
+        with torch.no_grad():
+            logits = dmg_model(cx)
+            prob = torch.softmax(logits, dim=1)[0].detach().cpu().numpy()
 
-    if debug:
-        print(f"[DEBUG] total kept boxes: {len(boxes)}", file=sys.stderr)
-        for cls_name, box, sc in parts:
-            print(f"[DEBUG] PART  {cls_name:16s} score={sc:.3f} box={box}", file=sys.stderr)
-        for cls_name, box, sc in damages:
-            print(f"[DEBUG] DAMAGE {cls_name:16s} score={sc:.3f} box={box}", file=sys.stderr)
+        dmg_idx = int(prob.argmax())
+        dmg_type = DAMAGE_TYPES[dmg_idx]
+        dmg_conf = float(prob[dmg_idx])
 
-    # Pair logic: containment of damage inside part, but relaxed
-    detected_pairs = []
-    used_damages = set()
+        part_confidence = float(s.item())
+        smart_score = part_confidence * dmg_conf
+        parts.append({
+            "part": cls,
+            "part_confidence": part_confidence,
+            "bbox": [x1, y1, x2, y2],
+            "damage_type": dmg_type,
+            "damage_confidence": dmg_conf,
+            "smart_score": smart_score,
+        })
 
-    for p_name, p_box, p_conf in parts:
-        best_dmg = None
-        best_coverage = 0.0
-        best_dmg_idx = -1
+    damaged = [p for p in parts if p["damage_type"] != "none"]
+    best = max(damaged, key=lambda p: p["smart_score"]) if damaged else None
 
-        px1, py1, px2, py2 = p_box
+    # Pipeline compatibility: build_repair_plan_from_detection and server expect detected_pairs
+    detected_pairs = [
+        {
+            "part": p["part"],
+            "damage_type": p["damage_type"],
+            "part_confidence": p["part_confidence"],
+            "damage_confidence": p["damage_confidence"],
+            "smart_score": p["smart_score"],
+        }
+        for p in parts
+        if p["damage_type"] != "none"
+    ]
 
-        for i, (d_name, d_box, d_conf) in enumerate(damages):
-            if i in used_damages:
-                continue
-
-            dx1, dy1, dx2, dy2 = d_box
-
-            x1 = max(px1, dx1)
-            y1 = max(py1, dy1)
-            x2 = min(px2, dx2)
-            y2 = min(py2, dy2)
-
-            inter_w = max(0.0, x2 - x1)
-            inter_h = max(0.0, y2 - y1)
-            intersection_area = inter_w * inter_h
-
-            if intersection_area <= 0:
-                continue
-
-            d_area = max(1e-6, (dx2 - dx1) * (dy2 - dy1))
-            coverage = intersection_area / d_area
-
-            # Relaxed coverage threshold so imperfect boxes still pair
-            # Lowered from 0.15 to 0.10 to allow more pairings
-            if coverage > 0.10 and coverage > best_coverage:
-                best_coverage = coverage
-                best_dmg = (d_name, d_conf)
-                best_dmg_idx = i
-
-        if best_dmg is not None:
-            dmg_name, dmg_conf = best_dmg
-            # Calculate smart score for better pair selection
-            overlap_bonus = max(0.5, best_coverage) if best_coverage > 0.15 else 0.3
-            smart_score = float(p_conf) * float(dmg_conf) * overlap_bonus
-            
-            detected_pairs.append({
-                "part": p_name,
-                "part_confidence": float(p_conf),
-                "damage_type": dmg_name,
-                "damage_confidence": float(dmg_conf),
-                "overlap_iou": float(best_coverage),
-                "smart_score": smart_score  # Add smart score for better selection
-            })
-            used_damages.add(best_dmg_idx)
-
-    # Fallback: if we saw damage but no pair passed coverage threshold,
-    # assign each damage to the nearest part by center distance.
-    if not detected_pairs and damages and parts:
-        if debug:
-            print("[DEBUG] No pairs from coverage; using nearest-part fallback.", file=sys.stderr)
-        for d_name, d_box, d_conf in damages:
-            dx = 0.5 * (d_box[0] + d_box[2])
-            dy = 0.5 * (d_box[1] + d_box[3])
-
-            best_p = None
-            best_dist = 1e9
-            for p_name, p_box, p_conf in parts:
-                px = 0.5 * (p_box[0] + p_box[2])
-                py = 0.5 * (p_box[1] + p_box[3])
-                dist = abs(px - dx) + abs(py - dy)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_p = (p_name, p_conf)
-
-            if best_p is not None:
-                p_name, p_conf = best_p
-                # Calculate smart score for fallback pairs too
-                smart_score = float(p_conf) * float(d_conf) * 0.3  # Lower bonus for fallback
-                detected_pairs.append({
-                    "part": p_name,
-                    "part_confidence": float(p_conf),
-                    "damage_type": d_name,
-                    "damage_confidence": float(d_conf),
-                    "overlap_iou": 0.0,
-                    "smart_score": smart_score
-                })
-
-    if debug:
-        print(f"[DEBUG] detected_pairs: {json.dumps(detected_pairs, indent=2)}", file=sys.stderr)
-
-    # If no pairs detected but we have parts, it means the model isn't detecting damages
-    if not detected_pairs and parts:
-        print("[WARN] Model detected parts but no damages.", file=sys.stderr)
-        if max([d[2] for d in damages], default=0.0) < 0.1:
-            print("[HINT] Model appears undertrained. Retrain with: python scripts/train_detector_mobilenet.py --epochs 100", file=sys.stderr)
-        else:
-            print("[HINT] Try lowering --threshold parameter (current: {:.3f})".format(threshold), file=sys.stderr)
-    
     return {
         "image_path": image_path,
-        "detected_pairs": detected_pairs
+        "parts": parts,
+        "best_damage": best,
+        "detected_pairs": detected_pairs,
     }
 
+
+# Legacy name for callers that use detect()
+def detect(image_path, weights=None, threshold=0.35, **kwargs):
+    """Legacy entrypoint: same as detect_damage with part_thresh=threshold."""
+    return detect_damage(image_path, part_thresh=threshold, **kwargs)
 
 
 if __name__ == "__main__":
     import argparse
+
     ap = argparse.ArgumentParser()
-    ap.add_argument("--image", nargs="*", required=True, help="Image file(s) to process")
-    ap.add_argument("--weights", default="./models/damage_detection/mobilenet_ssd.pth")
-    ap.add_argument("--threshold", type=float, default=0.15)
-    ap.add_argument("--debug", action="store_true")
-    ap.add_argument("--visualize", action="store_true", help="Save detection visualization")
+    ap.add_argument("--image", required=True)
+    ap.add_argument("--part_thresh", "--threshold", type=float, default=0.35, dest="part_thresh")
+    ap.add_argument("--parts_weights", default="./models/damage_detection/parts_detector_ssd.pth")
+    ap.add_argument("--damage_weights", default="./models/damage_detection/damage_classifier_resnet18.pth")
+    ap.add_argument("--debug", action="store_true", help="Ignored; kept for CLI compatibility")
     args = ap.parse_args()
-
-    results = []
-    for img_path in args.image:
-        result = detect(
-            img_path,
-            weights=args.weights,
-            threshold=args.threshold,
-            debug=args.debug,
-        )
-        results.append(result)
-        print(json.dumps(result, indent=2))
-
-        if args.visualize:
-            try:
-                img = Image.open(img_path).convert("RGB")
-                import matplotlib.pyplot as plt
-                import matplotlib.patches as patches
-                fig, ax = plt.subplots(1)
-                ax.imshow(img)
-                for pair in result.get("detected_pairs", []):
-                    box = pair.get("part_confidence", None)
-                    dmg_box = pair.get("damage_confidence", None)
-                    part = pair.get("part", "")
-                    dmg_type = pair.get("damage_type", "")
-                    # Draw part box (blue)
-                    if "part" in pair and "overlap_iou" in pair:
-                        color = "blue"
-                        rect = patches.Rectangle((box[0], box[1]), box[2]-box[0], box[3]-box[1], linewidth=2, edgecolor=color, facecolor='none')
-                        ax.add_patch(rect)
-                        ax.text(box[0], box[1], part, color=color, fontsize=8)
-                    # Draw damage box (red)
-                    if "damage_type" in pair and "overlap_iou" in pair:
-                        color = "red"
-                        rect = patches.Rectangle((dmg_box[0], dmg_box[1]), dmg_box[2]-dmg_box[0], dmg_box[3]-dmg_box[1], linewidth=2, edgecolor=color, facecolor='none')
-                        ax.add_patch(rect)
-                        ax.text(dmg_box[0], dmg_box[1], dmg_type, color=color, fontsize=8)
-                plt.axis('off')
-                out_path = img_path.replace('.jpg', '_detected.jpg').replace('.png', '_detected.png')
-                plt.savefig(out_path, bbox_inches='tight', pad_inches=0)
-                plt.close()
-                print(f"[VISUALIZE] Saved detection visualization to {out_path}", file=sys.stderr)
-            except Exception as e:
-                print(f"[WARN] Visualization failed: {e}", file=sys.stderr)
+    result = detect_damage(
+        args.image,
+        parts_weights=args.parts_weights,
+        damage_weights=args.damage_weights,
+        part_thresh=args.part_thresh,
+    )
+    print(json.dumps(result, indent=2))

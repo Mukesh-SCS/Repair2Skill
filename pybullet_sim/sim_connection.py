@@ -18,6 +18,39 @@ def connect(gui: bool = False):
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     p.resetSimulation()
     p.setGravity(0, 0, -9.81)
+    
+    # =========================================================================
+    # PHYSICS STABILITY SETTINGS (ARCHITECTURAL FIX)
+    # =========================================================================
+    # These settings improve constraint stability and prevent objects from
+    # falling through grippers or jittering during constrained motion.
+    #
+    # Parameters:
+    # - fixedTimeStep: Smaller = more stable but slower (1/240 = 4.17ms)
+    # - numSolverIterations: More = more stable constraints (150 is high)
+    # - enableConeFriction: 1 = cone friction model (more realistic)
+    # - contactBreakingThreshold: Small = keeps contacts longer (0.001m = 1mm)
+    # - erp: Error reduction parameter (higher = stiffer constraints)
+    # - contactERP: Stiffness of contacts
+    try:
+        p.setPhysicsEngineParameter(
+            fixedTimeStep=1.0/240.0,      # Fine timestep for accuracy
+            numSolverIterations=150,       # High iterations for stable grasps
+            enableConeFriction=1,          # Realistic friction cone
+            contactBreakingThreshold=0.001,  # 1mm - keep contacts longer
+            erp=0.9,                       # High stiffness for constraints
+            contactERP=0.9                 # High stiffness for contacts
+        )
+    except TypeError:
+        # Some PyBullet versions don't support all parameters
+        # Try with the basic set that's always supported
+        p.setPhysicsEngineParameter(
+            fixedTimeStep=1.0/240.0,
+            numSolverIterations=150,
+            enableConeFriction=1,
+            erp=0.9
+        )
+    
     p.loadURDF("plane.urdf")
     return cid
 
@@ -118,28 +151,27 @@ def set_frame_callback(callback):
     _frame_callback = callback
 
 
-def step_sim(seconds: float = 0.4, hz: int = 120, blocking: bool = True):
+def step_sim(seconds: float = 0.4, hz: int = 240, blocking: bool = True):
     """Advance the physics simulation.
     
     Args:
         seconds: Duration to simulate
-        hz: Physics update frequency (default 120 Hz - optimized for streaming)
+        hz: Physics update frequency (default 240 Hz - matches fixedTimeStep)
         blocking: If True, uses time.sleep between steps. If False, runs steps
                   as fast as possible (useful for batch operations).
     
-    NOTE: When blocking=True, this function contains time.sleep().
-    For better streaming performance, consider using blocking=False
-    when the visual update timing isn't critical.
+    NOTE: Default hz=240 matches fixedTimeStep=1/240 for consistency.
+    This ensures the stepping rate is consistent with physics engine settings.
+    Previously was 120 Hz which mismatched the physics timestep.
     
     Performance Note:
-    - Reduced from 240 Hz to 120 Hz for better streaming performance
-    - Still 120x real-time simulation, more than sufficient
-    - Saves ~50% CPU while maintaining visual quality at 30 FPS
+    - 240 Hz physics provides accurate constraint and contact behavior
+    - Sufficient for real-time streaming at 30 FPS (frame_interval=8)
     """
     global _frame_callback
     num_steps = int(seconds * hz)
     
-    # Capture frame every N steps (~30 FPS if hz=120 and frame_interval=4)
+    # Capture frame every N steps (~30 FPS if hz=240 and frame_interval=8)
     frame_interval = max(1, hz // 30)
     
     if blocking:

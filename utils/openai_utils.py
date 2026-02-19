@@ -136,6 +136,22 @@ def generate_repair_plan(furniture_type: str, damaged_part: str, damage_type: st
         return _get_fallback_plan(damaged_part, damage_type)
 
 
+def _ensure_remove_before_replace(repair_sequence: list) -> list:
+    """
+    Reorder steps so that 'remove' actions always come before 'replace' for the
+    same or related parts (sim-friendly order). Preserves step_id and relative
+    order within same action type.
+    """
+    if not repair_sequence:
+        return repair_sequence
+    # Canonical order: inspect -> remove -> replace -> tighten -> clean
+    order = {"inspect": 0, "remove": 1, "replace": 2, "tighten": 3, "clean": 4}
+    def sort_key(step):
+        action = (step.get("action_type") or "").lower()
+        return (order.get(action, 5), step.get("step_id", 0))
+    return sorted(repair_sequence, key=sort_key)
+
+
 def _get_fallback_plan(part, damage):
     """Deterministic fallback for testing or offline mode."""
     logger.info("Generating fallback deterministic plan.")

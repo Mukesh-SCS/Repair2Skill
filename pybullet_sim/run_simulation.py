@@ -13,16 +13,35 @@ import os
 import json
 import threading
 import time
-from sim_connection import connect, reset_camera, keep_window_open, save_screenshot
-from sim_robot import load_robot
-from sim_scene import spawn_simple_chair
-from sim_plan_executor import load_json, execute_step
 try:
-    from stream_server import start_streaming_server, capture_frame
+    from pybullet_sim.sim_connection import connect, reset_camera, keep_window_open, save_screenshot
 except ImportError:
-    start_streaming_server = None
-    capture_frame = None
-    print("[WARN] stream_server not available, using legacy screenshot mode", flush=True)
+    from sim_connection import connect, reset_camera, keep_window_open, save_screenshot
+
+try:
+    from pybullet_sim.sim_robot import load_robot, move_to_home
+except ImportError:
+    from sim_robot import load_robot, move_to_home
+
+try:
+    from pybullet_sim.sim_scene import spawn_simple_chair
+except ImportError:
+    from sim_scene import spawn_simple_chair
+
+try:
+    from pybullet_sim.sim_plan_executor import load_json, execute_step
+except ImportError:
+    from sim_plan_executor import load_json, execute_step
+
+try:
+    from pybullet_sim.stream_server import start_streaming_server, capture_frame
+except ImportError:
+    try:
+        from stream_server import start_streaming_server, capture_frame
+    except ImportError:
+        start_streaming_server = None
+        capture_frame = None
+        print("[WARN] stream_server not available, using legacy screenshot mode", flush=True)
 
 
 def main():
@@ -38,8 +57,8 @@ def main():
     ap.add_argument("--graph", default=None, help="(Optional) repair graph JSON")
     ap.add_argument(
         "--robot",
-        default="kuka",
-        help="Robot type identifier for sim_robot.load_robot"
+        default="panda",
+        help="Robot type (only 'panda' supported)"
     )
     ap.add_argument(
         "--damaged-part",
@@ -94,6 +113,12 @@ def main():
         print(f"[INFO] Spawning chair with damaged part: {damaged}", flush=True)
         parts = spawn_simple_chair(damaged)
         print(f"[INFO] Chair spawned with {len(parts)} parts", flush=True)
+        
+        # DEBUG: Print body IDs for collision debugging
+        print("[DEBUG] Chair body IDs:", flush=True)
+        for name, (bid, _) in parts.items():
+            print(f"  - {name}: body_id={bid}", flush=True)
+            
     except Exception as e:
         print(f"[ERROR] Failed to load robot or spawn chair: {e}", flush=True)
         import traceback
@@ -167,7 +192,7 @@ def main():
         if target_part not in parts:
             print(f"[SKIP] Part '{target_part}' not in simulation, skipping step {step.get('step_id')}")
             continue
-        execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, original_positions=original_positions)
+        execute_step(robot, ee_link, gripper, open_val, close_val, parts, step, original_positions=original_positions, robot_type=args.robot)
         
         # Legacy screenshot support (if enabled)
         if screenshot_path:
@@ -198,6 +223,18 @@ def main():
             except Exception as e:
                 print(f"[WARN] Failed to save step screenshot: {e}")
 
+    # =========================================================================
+    # RESET ROBOT TO HOME POSITION AFTER REPAIR SEQUENCE
+    # =========================================================================
+    # After completing all repair steps, return robot to a neutral home pose.
+    # This provides a clean visual ending and prepares the robot for the next task.
+    print("[INFO] All repair steps complete. Returning robot to home position...")
+    try:
+        move_to_home(robot, args.robot)
+        print("[INFO] Robot successfully returned to home position")
+    except Exception as e:
+        print(f"[WARN] Could not move robot to home position: {e}")
+    
     # Keep simulation running continuously for live streaming
     print("[INFO] Repair plan execution complete. Keeping simulation running for live streaming...")
     

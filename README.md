@@ -294,7 +294,7 @@ The simulation:
 │  ├─ PyBullet Physics Engine                                                  │
 │  ├─ KUKA iiwa / Panda Arm                                                    │
 │  ├─ Real-time repair execution                                               │
-│  ├─ Continuous streaming (6-7 FPS)                                          │
+│  ├─ Continuous streaming (6-7 FPS)                                           │
 │  └─ Interactive camera controls                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
