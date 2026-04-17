@@ -16,3 +16,4 @@ package-lock.json
 npm-debug.log
 ui/package-lock.json
 ui/uploads/
+Report_Files/* 
